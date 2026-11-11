@@ -11,7 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v1
+      - name: Install zig
+        run: |
+          curl -fsSL -o /tmp/zig.tar.xz https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
+          mkdir -p /opt/zig && tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
+          echo /opt/zig >> $GITHUB_PATH
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild

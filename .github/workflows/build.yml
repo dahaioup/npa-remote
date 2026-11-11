@@ -8,6 +8,8 @@ on:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      VCPKG_ROOT: C:\vcpkg
     steps:
       - uses: actions/checkout@v4
 
@@ -15,16 +17,15 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/rustdesk/rustdesk third_party/rustdesk
           git -C third_party/rustdesk submodule update --init libs/hbb_common
-          git clone --depth 1 https://github.com/rustdesk/hbb_common third_party/rustdesk/libs/hbb_common 2>$null; if ($LASTEXITCODE -ne 0) { $true }
-
-      - uses: lukka/get-vcpkg@v11
-      - name: Install libvpx
-        run: |
-          vcpkg install libvpx:x64-windows-static
-          echo "VCPKG_ROOT=$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+          if (!(Test-Path third_party\rustdesk\libs\hbb_common\Cargo.toml)) {
+            git clone --depth 1 https://github.com/rustdesk/hbb_common third_party/rustdesk/libs/hbb_common
+          }
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install libvpx
+        run: vcpkg install libvpx:x64-windows-static
 
       - name: Build
         run: cargo build --release

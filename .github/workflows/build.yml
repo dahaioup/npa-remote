@@ -11,6 +11,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout RustDesk libs (AGPL upstream)
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/rustdesk/rustdesk third_party/rustdesk
+          git -C third_party/rustdesk submodule update --init libs/hbb_common
+          if [ ! -f third_party/rustdesk/libs/hbb_common/Cargo.toml ]; then
+            git clone --depth 1 https://github.com/rustdesk/hbb_common third_party/rustdesk/libs/hbb_common
+          fi
       - name: Install zig
         run: |
           curl -fsSL -o /tmp/zig.tar.xz https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz

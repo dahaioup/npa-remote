@@ -172,32 +172,64 @@ fn json_ok(status: &str) -> Value {
 }
 
 /// Windows：DXGI 采集 + VP8（RustDesk scrap），帧 framing [type=2][key][len LE][data]。
+/// VP8 初始化或连续编码失败时回退 JPEG（xcap），保证浏览器始终有画面。
 #[cfg(target_os = "windows")]
 async fn stream_vpx(tx: mpsc::Sender<Vec<u8>>) {
     let handle = tokio::task::spawn_blocking(move || {
         let mut stream = match crate::vpx::VpxStream::new() {
-            Ok(s) => s,
+            Ok(s) => Some(s),
             Err(e) => {
-                tracing::error!("vpx stream init failed: {e:#}");
-                return;
+                tracing::error!("vpx init failed, falling back to jpeg: {e:#}");
+                None
             }
         };
+        let mut vpx_errs: u32 = 0;
         loop {
-            match stream.encode_one() {
-                Ok(Some(f)) => {
-                    let mut msg = vec![2u8, f.key as u8, 0, 0, 0, 0];
-                    let n = f.data.len() as u32;
+            if let Some(st) = stream.as_mut() {
+                match st.encode_one() {
+                    Ok(Some(f)) => {
+                        vpx_errs = 0;
+                        let mut msg = vec![2u8, f.key as u8, 0, 0, 0, 0];
+                        let n = f.data.len() as u32;
+                        msg[2..6].copy_from_slice(&n.to_le_bytes());
+                        msg.extend_from_slice(&f.data);
+                        if tx.blocking_send(msg).is_err() {
+                            return;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(30));
+                        continue;
+                    }
+                    Ok(None) => {
+                        std::thread::sleep(std::time::Duration::from_millis(15));
+                        continue;
+                    }
+                    Err(e) => {
+                        vpx_errs += 1;
+                        tracing::error!("vpx encode failed ({vpx_errs}): {e:#}");
+                        if vpx_errs >= 5 {
+                            tracing::error!("vpx disabled, falling back to jpeg");
+                            stream = None;
+                        } else {
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                        }
+                    }
+                }
+            }
+            // JPEG 回退路径
+            match crate::capture::grab(&Default::default())
+                .and_then(|f| crate::capture::encode_jpeg(&f, 70))
+            {
+                Ok(jpeg) => {
+                    let mut msg = vec![1u8, 0, 0, 0, 0, 0];
+                    let n = jpeg.len() as u32;
                     msg[2..6].copy_from_slice(&n.to_le_bytes());
-                    msg.extend_from_slice(&f.data);
+                    msg.extend_from_slice(&jpeg);
                     if tx.blocking_send(msg).is_err() {
                         return;
                     }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
                 }
-                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(15)),
-                Err(e) => {
-                    tracing::error!("vpx encode failed: {e:#}");
-                    return;
-                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(500)),
             }
         }
     });

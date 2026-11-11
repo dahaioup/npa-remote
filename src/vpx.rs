@@ -3,6 +3,8 @@
 #![cfg(target_os = "windows")]
 
 use anyhow::{Context, Result};
+use scrap::codec::EncoderApi;
+use scrap::{EncodeInput, EncodeYuvFormat, Pixfmt, TraitCapturer, VpxEncoderConfig, VpxVideoCodecId};
 
 pub struct VpxStream {
     capturer: scrap::Capturer,
@@ -37,11 +39,11 @@ impl VpxStream {
         let width = display.width();
         let height = display.height();
         let capturer = scrap::Capturer::new(display).context("capturer init")?;
-        let cfg = scrap::codec::EncoderCfg::VPX(scrap::codec::VpxEncoderConfig {
+        let cfg = scrap::codec::EncoderCfg::VPX(VpxEncoderConfig {
             width: width as _,
             height: height as _,
             quality: 60.0,
-            codec: scrap::codec::VpxVideoCodecId::VP8,
+            codec: VpxVideoCodecId::VP8,
             keyframe_interval: Some(300),
         });
         let encoder = scrap::codec::Encoder::new(cfg, false).context("vpx encoder init")?;

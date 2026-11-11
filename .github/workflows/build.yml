@@ -58,7 +58,7 @@ jobs:
 
       - name: Install Linux deps (dbus for enigo)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libx11-dev libxcb1-dev libxdo-dev libxkbcommon-dev libxkbcommon-x11-dev
 
       - name: Install vpx deps (windows only)
         if: matrix.vpx == 'true'

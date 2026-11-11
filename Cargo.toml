@@ -1,0 +1,30 @@
+[package]
+name = "npa-remote"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0"
+description = "NPA remote 插件：Web 远程控制 + 进阶截图/输入/剪贴板（可独立运行，也可作为 NPA 插件）"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+axum = { version = "0.7", features = ["ws"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+enigo = "0.2"
+arboard = "3"
+xcap = "0.0.14"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# RustDesk 采集/编码（AGPL）。仅 Windows 目标构建；mac/linux 仍走 xcap+JPEG。
+scrap = { path = "third_party/rustdesk/libs/scrap" }
+base = { path = "third_party/rustdesk/libs/base" }
+
+[profile.release]
+opt-level = 2
+lto = true
+strip = true

@@ -93,7 +93,7 @@ impl VpxStream {
             if let Some(last) = frames.frames.last() {
                 return Ok(Some(EncodedFrame {
                     key: last.key,
-                    data: last.data.clone(),
+                    data: last.data.to_vec(),
                 }));
             }
         }

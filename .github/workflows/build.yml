@@ -24,8 +24,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install libvpx
-        run: vcpkg install libvpx:x64-windows-static
+      - name: Install libvpx libyuv aom
+        run: vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static aom:x64-windows-static
 
       - name: Build
         run: cargo build --release

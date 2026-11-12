@@ -59,16 +59,6 @@ jobs:
             artifact: npa-remote-linux-arm64
             bin: npa-remote
             vpx: "false"
-          - os: macos-13
-            target: x86_64-apple-darwin
-            artifact: npa-remote-darwin-amd64
-            bin: npa-remote
-            vpx: "false"
-          - os: macos-14
-            target: aarch64-apple-darwin
-            artifact: npa-remote-darwin-arm64
-            bin: npa-remote
-            vpx: "false"
     runs-on: ${{ matrix.os }}
     env:
       VCPKG_ROOT: C:\vcpkg
@@ -104,6 +94,44 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/${{ matrix.target }}/release/${{ matrix.bin }}
+
+  macos-manual:
+    # macOS 构建改手动触发：免费 runner 排队严重（4h+ queued），本机 Intel Mac 编译更快，
+    # 此 job 仅在 workflow_dispatch 时按需补官方 CI 构件。
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact: npa-remote-darwin-amd64
+            bin: npa-remote
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact: npa-remote-darwin-arm64
+            bin: npa-remote
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout RustDesk libs (AGPL upstream)
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/rustdesk/rustdesk third_party/rustdesk
+          git -C third_party/rustdesk submodule update --init libs/hbb_common
+          if [ ! -f third_party/rustdesk/libs/hbb_common/Cargo.toml ]; then
+            git clone --depth 1 https://github.com/rustdesk/hbb_common third_party/rustdesk/libs/hbb_common
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

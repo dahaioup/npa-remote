@@ -7,6 +7,7 @@ use scrap::codec::EncoderApi;
 use scrap::{EncodeInput, EncodeYuvFormat, Pixfmt, TraitCapturer, VpxEncoderConfig, VpxVideoCodecId};
 
 pub struct VpxStream {
+    screen_id: usize,
     capturer: scrap::Capturer,
     encoder: scrap::codec::Encoder,
     width: usize,
@@ -34,14 +35,15 @@ fn yuv_format(w: usize, h: usize) -> scrap::EncodeYuvFormat {
 }
 
 impl VpxStream {
-    pub fn new() -> Result<Self> {
+    pub fn new(screen: &'static std::sync::atomic::AtomicUsize) -> Result<Self> {
         // scrap master 的 Display::primary() 在 Windows 上是未实现的占位（恒 Err(NotFound)），
         // 必须用 all() 取第一块屏（与 rustdesk 本体一致）。
         let mut displays = scrap::Display::all().context("no display")?;
         if displays.is_empty() {
             anyhow::bail!("no display found");
         }
-        let display = displays.remove(0);
+        let idx = screen.load(std::sync::atomic::Ordering::Relaxed).min(displays.len() - 1);
+        let display = displays.swap_remove(idx);
         let width = display.width();
         let height = display.height();
         let capturer = scrap::Capturer::new(display).context("capturer init")?;
@@ -54,6 +56,7 @@ impl VpxStream {
         });
         let encoder = scrap::codec::Encoder::new(cfg, false).context("vpx encoder init")?;
         Ok(Self {
+            screen_id: screen.load(std::sync::atomic::Ordering::Relaxed),
             capturer,
             encoder,
             width,

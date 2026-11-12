@@ -135,7 +135,18 @@ async fn handle_control(v: &Value, quality: &mut u8, fps: &mut u64) -> String {
             "pos" => {
                 let (x, y) = crate::input::mouse_pos().unwrap_or((0, 0));
                 let (w, h) = crate::capture::screen_size().unwrap_or((0, 0));
-                Ok(serde_json::json!({"ok":true,"x":x,"y":y,"screen_w":w,"screen_h":h}))
+                let screens: Vec<serde_json::Value> = crate::capture::screen_list()
+                    .iter()
+                    .map(|(id, sw, sh)| serde_json::json!({"id": id, "w": sw, "h": sh}))
+                    .collect();
+                Ok(serde_json::json!({"ok":true,"x":x,"y":y,"screen_w":w,"screen_h":h,
+                    "screen": crate::capture::SCREEN_SEL.load(std::sync::atomic::Ordering::Relaxed),
+                    "screens": screens}))
+            }
+            "screen" => {
+                let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                crate::capture::SCREEN_SEL.store(id, std::sync::atomic::Ordering::Relaxed);
+                Ok(serde_json::json!({"ok":true,"screen":id}))
             }
             "clip_get" => Ok(serde_json::json!({"ok":true,"text":crate::input::clipboard_get().map_err(|e| e.to_string())?})),
             "clip_set" => {
@@ -176,7 +187,9 @@ fn json_ok(status: &str) -> Value {
 #[cfg(target_os = "windows")]
 async fn stream_vpx(tx: mpsc::Sender<Vec<u8>>) {
     let handle = tokio::task::spawn_blocking(move || {
-        let mut stream = match crate::vpx::VpxStream::new() {
+        let sel = &crate::capture::SCREEN_SEL;
+        let mut last_screen = sel.load(std::sync::atomic::Ordering::Relaxed);
+        let mut stream = match crate::vpx::VpxStream::new(sel) {
             Ok(s) => Some(s),
             Err(e) => {
                 tracing::error!("vpx init failed, falling back to jpeg: {e:#}");
@@ -185,6 +198,17 @@ async fn stream_vpx(tx: mpsc::Sender<Vec<u8>>) {
         };
         let mut vpx_errs: u32 = 0;
         loop {
+            // 多屏：前端发 {"t":"screen","id":N} 后下一帧起切换屏幕（重建采集/编码器）
+            let cur_screen = sel.load(std::sync::atomic::Ordering::Relaxed);
+            if cur_screen != last_screen {
+                last_screen = cur_screen;
+                stream = crate::vpx::VpxStream::new(sel)
+                    .map(Some)
+                    .unwrap_or_else(|e| {
+                        tracing::error!("vpx rescreen failed: {e:#}");
+                        None
+                    });
+            }
             if let Some(st) = stream.as_mut() {
                 match st.encode_one() {
                     Ok(Some(f)) => {

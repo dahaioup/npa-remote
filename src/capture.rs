@@ -50,11 +50,32 @@ pub fn encode_jpeg(frame: &RgbaImage, quality: u8) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// 全屏帧：优先 xcap，权限受限时回退平台 CLI。
+/// 屏幕选择：None = 首屏；Some(i) = 第 i 块屏（多屏支持）。
+pub static SCREEN_SEL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn screen_count() -> usize {
+    xcap::Monitor::all().map(|m| m.len()).unwrap_or(1)
+}
+
+/// 枚举屏幕（id 从 0 起），前端下拉框用。
+pub fn screen_list() -> Vec<(usize, u32, u32)> {
+    xcap::Monitor::all()
+        .map(|ms| {
+            ms.iter()
+                .enumerate()
+                .map(|(i, m)| (i, m.width() as u32, m.height() as u32))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 全屏帧：优先 xcap 按选定屏抓取，权限受限时回退平台 CLI。
 fn grab_full() -> Result<RgbaImage> {
-    if let Ok(monitors) = xcap::Monitor::all() {
-        if let Some(m) = monitors.first() {
-            if let Ok(img) = m.capture_image() {
+    let sel = SCREEN_SEL.load(std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut monitors) = xcap::Monitor::all() {
+        if !monitors.is_empty() {
+            let idx = sel.min(monitors.len() - 1);
+            if let Ok(img) = monitors.swap_remove(idx).capture_image() {
                 return Ok(img);
             }
         }

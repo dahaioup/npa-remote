@@ -16,6 +16,7 @@
 <div id="bar">
   <b>NPA 远程控制</b>
   <span id="status">未连接</span>
+  <label>屏幕 <select id="screenSel"><option value="0">屏幕 0</option></select></label>
   <label>画质 <select id="quality"><option>50</option><option selected>70</option><option>85</option></select></label>
   <label>帧率 <select id="fps"><option>2</option><option selected>4</option><option>8</option><option>12</option></select></label>
   <input id="text" placeholder="输入文字回车发送" size="28">
@@ -76,7 +77,20 @@ function connect(){
     } else {
       const v = JSON.parse(m.data);
       if(v.t==='clip') document.getElementById('clip').textContent = v.text||'(空)';
-      if(v.t==='pos') status.textContent = `已连接 · 鼠标 ${v.x},${v.y} · 屏幕 ${v.screen_w}x${v.screen_h}`;
+      if(v.t==='pos'){
+        status.textContent = `已连接 · 鼠标 ${v.x},${v.y} · 屏幕 ${v.screen_w}x${v.screen_h}`;
+        // 多屏下拉
+        if(Array.isArray(v.screens) && v.screens.length){
+          const sel = document.getElementById('screenSel');
+          const cur = sel.value;
+          const sig = v.screens.map(s=>s.id+':'+s.w+'x'+s.h).join(',');
+          if(sel.dataset.sig !== sig){
+            sel.dataset.sig = sig;
+            sel.innerHTML = v.screens.map(s=>`<option value="${s.id}">屏幕 ${s.id} (${s.w}x${s.h})</option>`).join('');
+            sel.value = String(v.screen ?? 0);
+          }
+        }
+      }
     }
   };
 }
@@ -97,6 +111,7 @@ view.addEventListener('dblclick', e=>{ const p=toScreen(e); send({t:'click',x:p.
 view.addEventListener('wheel', e=>{ e.preventDefault(); send({t:'scroll',dy:Math.sign(e.deltaY)*120}); }, {passive:false});
 
 document.getElementById('quality').onchange = e=> send({t:'quality',v:+e.target.value});
+document.getElementById('screenSel').onchange = e=> send({t:'screen',id:+e.target.value});
 document.getElementById('fps').onchange = e=> send({t:'fps',v:+e.target.value});
 document.getElementById('text').onkeydown = e=>{
   if(e.key==='Enter'){ const t=e.target.value; e.target.value=''; send({t:'type',text:t}); }

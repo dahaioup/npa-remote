@@ -17,7 +17,8 @@
   <b>NPA 远程控制</b>
   <span id="status">未连接</span>
   <label>屏幕 <select id="screenSel"><option value="0">屏幕 0</option></select></label>
-  <label>画质 <select id="quality"><option>50</option><option selected>70</option><option>85</option></select></label>
+  <label>画质 <select id="quality"><option value="0" selected>流畅 256K</option><option value="1">清晰 512K</option><option value="2">高清 1M</option><option value="3">超清 2M</option></select></label>
+  <label>分辨率 <select id="scale"><option value="100" selected>100%</option><option value="90">90%</option><option value="70">70%</option><option value="50">50%</option></select></label>
   <label>帧率 <select id="fps"><option>5</option><option selected>10</option><option>20</option><option>30</option></select></label>
   <input id="text" placeholder="输入文字回车发送" size="28">
   <input id="combo" placeholder="组合键 如 ctrl+v" size="12">
@@ -31,6 +32,13 @@
 const view = document.getElementById('view'), ctx = view.getContext('2d');
 const status = document.getElementById('status');
 let ws, scale = 1;
+// 状态栏：连接 + 编码 + 分辨率 + 鼠标 + 屏幕
+const meta = {conn:'未连接', codec:'—', w:0, h:0, x:0, y:0, sw:0, sh:0};
+function renderStatus(){
+  const res = meta.w ? `${meta.codec} · ${meta.w}x${meta.h}` : meta.codec;
+  const mouse = meta.sw ? ` · 鼠标 ${meta.x},${meta.y} · 屏幕 ${meta.sw}x${meta.sh}` : '';
+  status.textContent = `${meta.conn} · ${res}${mouse}`;
+}
 function send(o){ if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); }
 // WebCodecs VP8 解码（Windows 路径；JPEG 帧走 createImageBitmap）
 let decoder = null, pts = 0;
@@ -46,6 +54,7 @@ function ensureDecoder(){
 }
 function onFrame(source){
   if (source.width && view.width!==source.width){ view.width=source.width; view.height=source.height; }
+  if (source.width){ meta.w=source.width; meta.h=source.height; renderStatus(); }
   ctx.drawImage(source,0,0,view.width||source.width,view.height||source.height);
 }
 function handleBinary(buf){
@@ -55,8 +64,10 @@ function handleBinary(buf){
   const len = dv.getUint32(2,true);
   const data = new Uint8Array(buf,6,len);
   if (type===1){ // JPEG
+    meta.codec='JPEG';
     createImageBitmap(new Blob([data],{type:'image/jpeg'})).then(bmp=>{ onFrame(bmp); bmp.close(); });
   } else if (type===2){ // VP8
+    meta.codec='VP8';
     const dec = ensureDecoder();
     if (!dec){ status.textContent='浏览器不支持 WebCodecs'; return; }
     dec.decode(new EncodedVideoChunk({
@@ -69,8 +80,8 @@ function handleBinary(buf){
 function connect(){
   ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
   ws.binaryType = 'arraybuffer';
-  ws.onopen = ()=> status.textContent='已连接';
-  ws.onclose = ()=> { status.textContent='断开，2s 后重连'; setTimeout(connect,2000); };
+  ws.onopen = ()=> { meta.conn='已连接'; renderStatus(); };
+  ws.onclose = ()=> { meta.conn='断开，2s 后重连'; renderStatus(); setTimeout(connect,2000); };
   ws.onmessage = (m)=>{
     if(m.data instanceof ArrayBuffer){
       handleBinary(m.data);
@@ -78,7 +89,8 @@ function connect(){
       const v = JSON.parse(m.data);
       if(v.t==='clip') document.getElementById('clip').textContent = v.text||'(空)';
       if(v.t==='pos'){
-        status.textContent = `已连接 · 鼠标 ${v.x},${v.y} · 屏幕 ${v.screen_w}x${v.screen_h}`;
+        meta.x=v.x; meta.y=v.y; meta.sw=v.screen_w; meta.sh=v.screen_h;
+        renderStatus();
         // 多屏下拉
         if(Array.isArray(v.screens) && v.screens.length){
           const sel = document.getElementById('screenSel');
@@ -108,9 +120,10 @@ view.addEventListener('mousemove', e=>{ const p=toScreen(e); send({t:'move',x:p.
 view.addEventListener('click', e=>{ const p=toScreen(e); send({t:'click',x:p.x,y:p.y,button:'left'}); });
 view.addEventListener('contextmenu', e=>{ e.preventDefault(); const p=toScreen(e); send({t:'click',x:p.x,y:p.y,button:'right'}); });
 view.addEventListener('dblclick', e=>{ const p=toScreen(e); send({t:'click',x:p.x,y:p.y,button:'left',count:2}); });
-view.addEventListener('wheel', e=>{ e.preventDefault(); send({t:'scroll',dy:Math.sign(e.deltaY)*120}); }, {passive:false});
+view.addEventListener('wheel', e=>{ e.preventDefault(); const p=toScreen(e); send({t:'scroll',dy:Math.sign(e.deltaY)*120,x:p.x,y:p.y}); }, {passive:false});
 
 document.getElementById('quality').onchange = e=> send({t:'quality',v:+e.target.value});
+document.getElementById('scale').onchange = e=> send({t:'scale',v:+e.target.value});
 document.getElementById('screenSel').onchange = e=> send({t:'screen',id:+e.target.value});
 document.getElementById('fps').onchange = e=> send({t:'fps',v:+e.target.value});
 document.getElementById('text').onkeydown = e=>{

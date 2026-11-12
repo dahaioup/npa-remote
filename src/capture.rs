@@ -124,3 +124,74 @@ pub fn screen_size() -> Result<(u32, u32)> {
     let img = grab_full()?;
     Ok((img.width(), img.height()))
 }
+
+/// 画质档（0=流畅 1=清晰 2=高清 3=超清）→ JPEG 质量。
+/// 四档按 1080P 码率 256K/512K/1M/2M 定义（VP8 路径见 vpx.rs::tier_ratio），
+/// JPEG 路径映射为视觉可辨的压缩质量。
+pub fn tier_jpeg_quality(tier: u8) -> u8 {
+    match tier {
+        0 => 50,
+        1 => 65,
+        2 => 78,
+        _ => 90,
+    }
+}
+
+/// 帧缩放百分比（50/70/90/100）→ 缩放 RGBA 帧。>=100 原样返回。
+pub fn resize_rgba(img: &RgbaImage, pct: u8) -> RgbaImage {
+    if pct >= 100 {
+        return img.clone();
+    }
+    let nw = (img.width() as u32 * pct as u32 / 100).max(1);
+    let nh = (img.height() as u32 * pct as u32 / 100).max(1);
+    image::imageops::resize(img, nw, nh, image::imageops::FilterType::Triangle)
+}
+
+/// 物理像素 / enigo 逻辑坐标 的比值。
+/// mac Retina：xcap 抓物理像素（2x），CGEvent 用逻辑点 → 2.0；其它平台 1.0。
+/// （Windows DPI 感知待实测，先按 1.0。）
+pub fn pixel_per_point() -> f64 {
+    #[cfg(target_os = "macos")]
+    {
+        xcap::Monitor::all()
+            .ok()
+            .and_then(|ms| ms.first().map(|m| m.scale_factor() as f64))
+            .filter(|v| *v > 0.0)
+            .unwrap_or(1.0)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        1.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jpeg_tier_mapping() {
+        assert_eq!(tier_jpeg_quality(0), 50);
+        assert_eq!(tier_jpeg_quality(1), 65);
+        assert_eq!(tier_jpeg_quality(2), 78);
+        assert_eq!(tier_jpeg_quality(3), 90);
+        assert_eq!(tier_jpeg_quality(255), 90); // 越界按最高档
+    }
+
+    #[test]
+    fn resize_scales_dimensions() {
+        let img = RgbaImage::new(1920, 1080);
+        assert_eq!(resize_rgba(&img, 100).dimensions(), (1920, 1080));
+        assert_eq!(resize_rgba(&img, 90).dimensions(), (1728, 972));
+        assert_eq!(resize_rgba(&img, 70).dimensions(), (1344, 756));
+        assert_eq!(resize_rgba(&img, 50).dimensions(), (960, 540));
+        // 极小图不越界
+        let tiny = RgbaImage::new(1, 1);
+        assert_eq!(resize_rgba(&tiny, 50).dimensions(), (1, 1));
+    }
+
+    #[test]
+    fn pixel_per_point_positive() {
+        assert!(pixel_per_point() >= 1.0);
+    }
+}

@@ -12,16 +12,34 @@ use tokio::sync::mpsc;
 
 const INDEX: &str = include_str!("index.html");
 const DEFAULT_FPS: u64 = 4;
-const MAX_FPS: u64 = 15;
+const MAX_FPS: u64 = 30;
 
 pub async fn serve(bind: &str, port: u16) -> Result<()> {
     let addr = format!("{bind}:{port}");
     let app = Router::new()
         .route("/", get(index))
         .route("/ws", get(ws_upgrade));
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!("remote plugin listening on http://{addr}");
-    axum::serve(listener, app).await?;
+    // HTTPS（自签证书）：WebCodecs 需要 secure context，局域网裸 HTTP 会拿不到解码器。
+    // 证书持久化在 exe 同目录，已有则复用（指纹稳定，浏览器信任一次即可）。
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let cert_path = exe_dir.join("npa-remote-cert.pem");
+    let key_path = exe_dir.join("npa-remote-key.pem");
+    if !cert_path.exists() || !key_path.exists() {
+        let ck = rcgen::generate_simple_self_signed(vec!["localhost".into(), "npa-remote".into()])?;
+        std::fs::write(&cert_path, ck.cert.pem())?;
+        std::fs::write(&key_path, ck.key_pair.serialize_pem())?;
+        tracing::info!("generated self-signed certificate at {}", cert_path.display());
+    }
+    let rustls_cfg = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path)
+        .await
+        .map_err(|e| anyhow::anyhow!("load tls config: {e}"))?;
+    tracing::info!("remote plugin listening on https://{addr} (self-signed)");
+    axum_server::bind_rustls(addr.parse()?, rustls_cfg)
+        .serve(app.into_make_service())
+        .await?;
     Ok(())
 }
 

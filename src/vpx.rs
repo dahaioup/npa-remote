@@ -35,7 +35,13 @@ fn yuv_format(w: usize, h: usize) -> scrap::EncodeYuvFormat {
 
 impl VpxStream {
     pub fn new() -> Result<Self> {
-        let display = scrap::Display::primary().context("no display")?;
+        // scrap master 的 Display::primary() 在 Windows 上是未实现的占位（恒 Err(NotFound)），
+        // 必须用 all() 取第一块屏（与 rustdesk 本体一致）。
+        let mut displays = scrap::Display::all().context("no display")?;
+        if displays.is_empty() {
+            anyhow::bail!("no display found");
+        }
+        let display = displays.remove(0);
         let width = display.width();
         let height = display.height();
         let capturer = scrap::Capturer::new(display).context("capturer init")?;

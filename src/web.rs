@@ -33,6 +33,7 @@ pub async fn serve(bind: &str, port: u16) -> Result<()> {
         std::fs::write(&key_path, ck.key_pair.serialize_pem())?;
         tracing::info!("generated self-signed certificate at {}", cert_path.display());
     }
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let rustls_cfg = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path)
         .await
         .map_err(|e| anyhow::anyhow!("load tls config: {e}"))?;

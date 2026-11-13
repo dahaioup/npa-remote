@@ -26,7 +26,7 @@ jobs:
           echo /opt/zig >> $GITHUB_PATH
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild --locked
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: aarch64-unknown-linux-gnu
       - name: Install link deps
@@ -78,7 +78,7 @@ jobs:
           fi
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: ${{ matrix.target }}
 
@@ -140,7 +140,7 @@ jobs:
           cmake -S /tmp/libyuv -B /tmp/libyuv/build -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX"
           cmake --build /tmp/libyuv/build -j4
           cmake --install /tmp/libyuv/build
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: ${{ matrix.target }}
       - name: Build

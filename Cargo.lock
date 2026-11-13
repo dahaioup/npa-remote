@@ -2672,6 +2672,7 @@ dependencies = [
  "axum",
  "axum-server",
  "base",
+ "cc",
  "clap 4.6.7",
  "enigo",
  "image",

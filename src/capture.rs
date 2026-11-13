@@ -75,10 +75,15 @@ fn grab_full() -> Result<RgbaImage> {
     if let Ok(mut monitors) = xcap::Monitor::all() {
         if !monitors.is_empty() {
             let idx = sel.min(monitors.len() - 1);
-            if let Ok(img) = monitors.swap_remove(idx).capture_image() {
-                return Ok(img);
+            match monitors.swap_remove(idx).capture_image() {
+                Ok(img) => return Ok(img),
+                Err(e) => tracing::warn!("xcap capture_image failed ({e}), fallback to cli"),
             }
+        } else {
+            tracing::warn!("xcap: no monitors, fallback to cli");
         }
+    } else {
+        tracing::warn!("xcap Monitor::all failed, fallback to cli");
     }
     grab_cli()
 }
@@ -125,14 +130,18 @@ pub fn screen_size() -> Result<(u32, u32)> {
     Ok((img.width(), img.height()))
 }
 
-/// 画质档（0=流畅 1=清晰 2=高清 3=超清）→ JPEG 质量。
-/// 四档按 1080P 码率 256K/512K/1M/2M 定义（VP8 路径见 vpx.rs::tier_ratio），
+/// 画质档（0=极简 1=省流 2=标清 3=流畅 4=清晰 5=高清 6=超清）→ JPEG 质量。
+/// 七档按 1080P 码率 32K/128K/512K/1M/2M/8M/16M 定义（VP8 路径见 vpx.rs::tier_kbps），
 /// JPEG 路径映射为视觉可辨的压缩质量。
 pub fn tier_jpeg_quality(tier: u8) -> u8 {
+    // 七档：32K/128K/512K/1M/2M/8M/16M → JPEG 质量（30..95 夹紧在 encode_jpeg）
     match tier {
-        0 => 50,
-        1 => 65,
-        2 => 78,
+        0 => 35,
+        1 => 42,
+        2 => 46,
+        3 => 50,
+        4 => 65,
+        5 => 78,
         _ => 90,
     }
 }
@@ -171,10 +180,13 @@ mod tests {
 
     #[test]
     fn jpeg_tier_mapping() {
-        assert_eq!(tier_jpeg_quality(0), 50);
-        assert_eq!(tier_jpeg_quality(1), 65);
-        assert_eq!(tier_jpeg_quality(2), 78);
-        assert_eq!(tier_jpeg_quality(3), 90);
+        assert_eq!(tier_jpeg_quality(0), 35); // 极简 32K
+        assert_eq!(tier_jpeg_quality(1), 42); // 省流 128K
+        assert_eq!(tier_jpeg_quality(2), 46); // 标清 512K
+        assert_eq!(tier_jpeg_quality(3), 50); // 流畅 1M（默认）
+        assert_eq!(tier_jpeg_quality(4), 65); // 清晰 2M
+        assert_eq!(tier_jpeg_quality(5), 78); // 高清 8M
+        assert_eq!(tier_jpeg_quality(6), 90); // 超清 16M
         assert_eq!(tier_jpeg_quality(255), 90); // 越界按最高档
     }
 

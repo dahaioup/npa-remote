@@ -4,72 +4,89 @@
 <meta charset="utf-8">
 <title>NPA 远程控制</title>
 <style>
-  body{margin:0;background:#111;color:#ddd;font:14px system-ui}
-  #bar{display:flex;gap:8px;align-items:center;padding:8px;background:#1b1b1b;flex-wrap:wrap}
+  html,body{height:100%;overflow:hidden}
+  body{margin:0;background:#111;color:#ddd;font:14px system-ui;display:flex;flex-direction:column}
+  #bar{display:flex;gap:8px;align-items:center;padding:8px;background:#1b1b1b;flex-wrap:wrap;flex:none}
   input,button,select{background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:4px;padding:4px 8px}
   button{cursor:pointer}
-  #view{display:block;margin:0 auto;width:100vw;height:calc(100vh - 56px);object-fit:contain;cursor:crosshair}
-  #status{font-size:12px;color:#8a8}
+  #view{display:block;width:100%;flex:1;min-height:0;object-fit:contain;cursor:crosshair}
+  #status{margin-left:auto;font-size:12px;color:#8a8;white-space:nowrap}
+  #clip{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8a8;font-size:12px}
 </style>
 </head>
 <body>
 <div id="bar">
   <b>NPA 远程控制</b>
-  <span id="status">未连接</span>
   <label>屏幕 <select id="screenSel"><option value="0">屏幕 0</option></select></label>
-  <label>画质 <select id="quality"><option value="0" selected>流畅 256K</option><option value="1">清晰 512K</option><option value="2">高清 1M</option><option value="3">超清 2M</option></select></label>
+  <label>画质 <select id="quality"><option value="0">极简 32K</option><option value="1">省流 128K</option><option value="2">标清 512K</option><option value="3" selected>流畅 1M</option><option value="4">清晰 2M</option><option value="5">高清 8M</option><option value="6">超清 16M</option></select></label>
   <label>分辨率 <select id="scale"><option value="100" selected>100%</option><option value="90">90%</option><option value="70">70%</option><option value="50">50%</option></select></label>
-  <label>帧率 <select id="fps"><option>5</option><option selected>10</option><option>20</option><option>30</option></select></label>
+  <label>帧率 <select id="fps"><option>1</option><option>5</option><option selected>10</option><option>20</option><option>30</option></select></label>
   <input id="text" placeholder="输入文字回车发送" size="28">
   <input id="combo" placeholder="组合键 如 ctrl+v" size="12">
   <button id="btnClipSet">复制选中→剪贴板</button>
   <button id="btnClipGet">取剪贴板</button>
   <button id="btnFull">全屏</button>
   <span id="clip"></span>
+  <span id="status">未连接</span>
 </div>
 <canvas id="view"></canvas>
 <script>
 const view = document.getElementById('view'), ctx = view.getContext('2d');
 const status = document.getElementById('status');
 let ws, scale = 1;
-// 状态栏：连接 + 编码 + 分辨率 + 鼠标 + 屏幕
-const meta = {conn:'未连接', codec:'—', w:0, h:0, x:0, y:0, sw:0, sh:0};
+// 状态栏：连接 + 编码 + 分辨率 + 延迟 + 停止态 + 鼠标 + 屏幕
+const meta = {conn:'未连接', codec:'—', w:0, h:0, x:0, y:0, sw:0, sh:0, lat:null, stopped:false};
+// 画面延迟：clockOffset=服务端-本机时钟差（每秒 ping 估算）；延迟=上屏时刻(+偏移)-帧采集时刻
+let clockOffset = 0, lastFrameAt = 0;
 function renderStatus(){
   const res = meta.w ? `${meta.codec} · ${meta.w}x${meta.h}` : meta.codec;
+  const lat = meta.lat!=null ? ` · 关键帧延迟 ${meta.lat}ms` : '';
+  const stop = meta.stopped ? ' · ⏸ 画面已停止' : '';
   const mouse = meta.sw ? ` · 鼠标 ${meta.x},${meta.y} · 屏幕 ${meta.sw}x${meta.sh}` : '';
-  status.textContent = `${meta.conn} · ${res}${mouse}`;
+  status.textContent = `${meta.conn} · ${res}${lat}${stop}${mouse}`;
 }
 function send(o){ if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); }
 // WebCodecs VP8 解码（Windows 路径；JPEG 帧走 createImageBitmap）
-let decoder = null, pts = 0;
+let decoder = null, pts = 0, vp8PendingTs = 0, vp8PendingKey = true;
 function ensureDecoder(){
   if (decoder) return decoder;
   if (!window.VideoDecoder) return null;
   decoder = new VideoDecoder({
-    output: f => { onFrame(f); f.close(); },
+    output: f => { onFrame(f, vp8PendingTs, vp8PendingKey); f.close(); },
     error: e => status.textContent = '解码错误: '+e.message
   });
   decoder.configure({codec:'vp8'});
   return decoder;
 }
-function onFrame(source){
-  if (source.width && view.width!==source.width){ view.width=source.width; view.height=source.height; }
-  if (source.width){ meta.w=source.width; meta.h=source.height; renderStatus(); }
-  ctx.drawImage(source,0,0,view.width||source.width,view.height||source.height);
+function onFrame(source, capTs, isKey){
+  // VideoFrame 不暴露 width/height（只有 codedWidth/displayWidth），ImageBitmap 才有 width
+  const fw = source.width || source.displayWidth || source.codedWidth;
+  const fh = source.height || source.displayHeight || source.codedHeight;
+  if (fw && view.width!==fw){ view.width=fw; view.height=fh; }
+  if (fw){ meta.w=fw; meta.h=fh; }
+  ctx.drawImage(source,0,0,view.width||fw,view.height||fh);
+  if (capTs){
+    lastFrameAt = Date.now();
+    // 只统计关键帧延迟（JPEG 每帧都是完整帧）
+    if (isKey) meta.lat = Math.max(0, Math.round(Date.now()+clockOffset-capTs));
+  }
+  renderStatus();
 }
 function handleBinary(buf){
-  if (buf.byteLength < 6) return;
+  if (buf.byteLength < 14) return;
   const dv = new DataView(buf);
   const type = dv.getUint8(0), key = dv.getUint8(1);
   const len = dv.getUint32(2,true);
-  const data = new Uint8Array(buf,6,len);
+  const capTs = Number(dv.getBigUint64(6,true));
+  const data = new Uint8Array(buf,14,len);
   if (type===1){ // JPEG
     meta.codec='JPEG';
-    createImageBitmap(new Blob([data],{type:'image/jpeg'})).then(bmp=>{ onFrame(bmp); bmp.close(); });
+    createImageBitmap(new Blob([data],{type:'image/jpeg'})).then(bmp=>{ onFrame(bmp, capTs, true); bmp.close(); });
   } else if (type===2){ // VP8
     meta.codec='VP8';
     const dec = ensureDecoder();
     if (!dec){ status.textContent='浏览器不支持 WebCodecs'; return; }
+    vp8PendingTs = capTs; vp8PendingKey = !!key;
     dec.decode(new EncodedVideoChunk({
       type: key? 'key':'delta',
       timestamp: pts += 66000,
@@ -80,27 +97,41 @@ function handleBinary(buf){
 function connect(){
   ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
   ws.binaryType = 'arraybuffer';
-  ws.onopen = ()=> { meta.conn='已连接'; renderStatus(); };
+  ws.onopen = ()=>{
+    meta.conn='已连接'; meta.stopped=false; renderStatus();
+    // 与服务端同步当前下拉选择（新会话默认：流畅/100%/10fps/屏幕0）
+    send({t:'quality',v:+document.getElementById('quality').value});
+    send({t:'scale',v:+document.getElementById('scale').value});
+    send({t:'fps',v:+document.getElementById('fps').value});
+    send({t:'screen',id:+document.getElementById('screenSel').value});
+  };
   ws.onclose = ()=> { meta.conn='断开，2s 后重连'; renderStatus(); setTimeout(connect,2000); };
   ws.onmessage = (m)=>{
     if(m.data instanceof ArrayBuffer){
       handleBinary(m.data);
     } else {
       const v = JSON.parse(m.data);
-      if(v.t==='clip') document.getElementById('clip').textContent = v.text||'(空)';
+      if(v.t==='clip_get') document.getElementById('clip').textContent = v.text||'(空)';
+      if(v.t==='ping' && v.ts){
+        const recv = Date.now();
+        if(v.server_ts) clockOffset = v.server_ts - (v.ts + recv)/2;
+        // >2.5s 无新帧（停止/断流）→ 延迟置空，不显示陈旧值
+        if(lastFrameAt && recv - lastFrameAt > 2500 && meta.lat!=null){ meta.lat = null; renderStatus(); }
+      }
       if(v.t==='pos'){
         meta.x=v.x; meta.y=v.y; meta.sw=v.screen_w; meta.sh=v.screen_h;
         renderStatus();
-        // 多屏下拉
+        // 多屏下拉（尾部固定「无」=停止推流），选择状态与服务端对齐（含 -1）
         if(Array.isArray(v.screens) && v.screens.length){
           const sel = document.getElementById('screenSel');
-          const cur = sel.value;
           const sig = v.screens.map(s=>s.id+':'+s.w+'x'+s.h).join(',');
           if(sel.dataset.sig !== sig){
             sel.dataset.sig = sig;
-            sel.innerHTML = v.screens.map(s=>`<option value="${s.id}">屏幕 ${s.id} (${s.w}x${s.h})</option>`).join('');
-            sel.value = String(v.screen ?? 0);
+            sel.innerHTML = v.screens.map(s=>`<option value="${s.id}">屏幕 ${s.id} (${s.w}x${s.h})</option>`).join('')
+              + '<option value="-1">无（停止画面）</option>';
           }
+          const want = String(v.screen ?? 0);
+          if(sel.value !== want) sel.value = want;
         }
       }
     }
@@ -108,23 +139,39 @@ function connect(){
 }
 connect();
 setInterval(()=>send({t:'pos'}), 3000);
+// 每秒 ping 一次：用 server_ts 估本机↔服务端时钟偏移（帧延迟计算用，不是网络延迟）
+setInterval(()=>send({t:'ping',ts:Date.now()}), 1000);
 
-// 画布坐标 → 屏幕坐标（JPEG 帧即全屏，直接按 canvas 实际尺寸映射）
+// 画布坐标 → 屏幕坐标（object-fit:contain 的 letterbox 感知；黑边返回 null 忽略输入）
 function toScreen(e){
+  if(!view.width || !view.height) return null;
   const r = view.getBoundingClientRect();
-  const x = Math.round((e.clientX-r.left)/r.width*view.width);
-  const y = Math.round((e.clientY-r.top)/r.height*view.height);
-  return {x,y};
+  const ia = view.width / view.height;          // 帧宽高比
+  let dw = r.width, dh = r.width / ia;
+  if (dh > r.height) { dh = r.height; dw = r.height * ia; }  // 竖向占满
+  const ox = (r.width - dw) / 2, oy = (r.height - dh) / 2;   // 居中偏移
+  const lx = e.clientX - r.left - ox, ly = e.clientY - r.top - oy;
+  if (lx < 0 || ly < 0 || lx > dw || ly > dh) return null;   // 黑边：不发
+  return {
+    x: Math.max(0, Math.min(view.width - 1, Math.round(lx / dw * view.width))),
+    y: Math.max(0, Math.min(view.height - 1, Math.round(ly / dh * view.height)))
+  };
 }
-view.addEventListener('mousemove', e=>{ const p=toScreen(e); send({t:'move',x:p.x,y:p.y}); });
-view.addEventListener('click', e=>{ const p=toScreen(e); send({t:'click',x:p.x,y:p.y,button:'left'}); });
-view.addEventListener('contextmenu', e=>{ e.preventDefault(); const p=toScreen(e); send({t:'click',x:p.x,y:p.y,button:'right'}); });
-view.addEventListener('dblclick', e=>{ const p=toScreen(e); send({t:'click',x:p.x,y:p.y,button:'left',count:2}); });
-view.addEventListener('wheel', e=>{ e.preventDefault(); const p=toScreen(e); send({t:'scroll',dy:Math.sign(e.deltaY)*120,x:p.x,y:p.y}); }, {passive:false});
+view.addEventListener('mousemove', e=>{ const p=toScreen(e); if(p) send({t:'move',x:p.x,y:p.y}); });
+view.addEventListener('click', e=>{ const p=toScreen(e); if(p) send({t:'click',x:p.x,y:p.y,button:'left'}); });
+view.addEventListener('contextmenu', e=>{ e.preventDefault(); const p=toScreen(e); if(p) send({t:'click',x:p.x,y:p.y,button:'right'}); });
+view.addEventListener('dblclick', e=>{ const p=toScreen(e); if(p) send({t:'click',x:p.x,y:p.y,button:'left',count:2}); });
+view.addEventListener('wheel', e=>{ e.preventDefault(); const p=toScreen(e); if(p) send({t:'scroll',dy:Math.sign(e.deltaY)*120,x:p.x,y:p.y}); }, {passive:false});
 
 document.getElementById('quality').onchange = e=> send({t:'quality',v:+e.target.value});
 document.getElementById('scale').onchange = e=> send({t:'scale',v:+e.target.value});
-document.getElementById('screenSel').onchange = e=> send({t:'screen',id:+e.target.value});
+document.getElementById('screenSel').onchange = e=>{
+  const id = +e.target.value;
+  send({t:'screen', id});
+  meta.stopped = id < 0;
+  if(meta.stopped){ ctx.fillStyle='#000'; ctx.fillRect(0,0,view.width,view.height); }
+  renderStatus();
+};
 document.getElementById('fps').onchange = e=> send({t:'fps',v:+e.target.value});
 document.getElementById('text').onkeydown = e=>{
   if(e.key==='Enter'){ const t=e.target.value; e.target.value=''; send({t:'type',text:t}); }

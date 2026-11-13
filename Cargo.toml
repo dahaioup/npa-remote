@@ -22,10 +22,15 @@ clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-[target.'cfg(target_os = "windows")'.dependencies]
-# RustDesk 采集/编码（AGPL）。仅 Windows 目标构建；mac/linux 仍走 xcap+JPEG。
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+# RustDesk 采集/编码（AGPL）。Windows/macOS 目标构建；linux 走 xcap+JPEG。
+# 依赖发现：scrap build.rs 走 VCPKG_ROOT 或 homebrew Cellar（本机补丁已支持 Intel /usr/local）。
 scrap = { path = "third_party/rustdesk/libs/scrap" }
 base = { path = "third_party/rustdesk/libs/base" }
+
+# build.rs：macOS 编译 BackingScaleFactor 最小实现（scrap Display::scale 需要）
+[build-dependencies]
+cc = "1"
 
 [profile.release]
 opt-level = 2

@@ -123,10 +123,23 @@ jobs:
         shell: bash
         run: |
           git clone --depth 1 https://github.com/rustdesk/rustdesk third_party/rustdesk
-          git -C third_party/rustdesk submodule update --init libs/hbb_common
+          git -C third_party/rustdesk submodule update --init libs/hbb_common libs/base
           if [ ! -f third_party/rustdesk/libs/hbb_common/Cargo.toml ]; then
             git clone --depth 1 https://github.com/rustdesk/hbb_common third_party/rustdesk/libs/hbb_common
           fi
+          if [ ! -f third_party/rustdesk/libs/base/Cargo.toml ]; then
+            git clone --depth 1 https://github.com/rustdesk/base third_party/rustdesk/libs/base
+          fi
+      - name: Install vpx deps (macOS)
+        run: |
+          brew install libvpx aom
+          # libyuv 不在 homebrew：源码装进 Cellar（scrap build.rs 只扫 Cellar 目录）
+          PREFIX="$( [ "$(uname -m)" = "arm64" ] && echo /opt/homebrew || echo /usr/local )/Cellar/libyuv/0.0.1"
+          git clone --depth 1 https://chromium.googlesource.com/chromium/src/third_party/libyuv /tmp/libyuv \
+            || git clone --depth 1 https://github.com/lemenkov/libyuv /tmp/libyuv
+          cmake -S /tmp/libyuv -B /tmp/libyuv/build -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX"
+          cmake --build /tmp/libyuv/build -j4
+          cmake --install /tmp/libyuv/build
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}

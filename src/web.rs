@@ -1,7 +1,9 @@
 // 独立模式：HTTP 静态页 + WS 控制通道。
 // 页面（内嵌 index.html）连 /ws：
 //   - 服务端每 interval 推一帧二进制 JPEG
-//   - 客户端发 JSON 文本：{t:"move"|"click"|"type"|"hotkey"|"scroll"|"clip_get"|"clip_set"|"quality"|"fps", ...}
+//   - 客户端发 JSON 文本：{t:"move"|"click"|"type"|"hotkey"|"scroll"|"clip_get"|"clip_set"|"quality"|"scale"|"fps"|"screen"|"pos"|"ping", ...}
+//   - 所有文本响应都回带 t=请求类型（前端据此分发），ping 回带 ts+server_ts 供估时钟偏移
+//   - 二进制帧 framing：[type][key][len u32 LE][capture_ts u64 LE][data]，capture_ts=服务端采集时刻（画面延迟=上屏-采集）
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Html;
@@ -14,10 +16,15 @@ const INDEX: &str = include_str!("index.html");
 const DEFAULT_FPS: u64 = 4;
 const MAX_FPS: u64 = 30;
 
-/// 画质四档（0=流畅 1=清晰 2=高清 3=超清），默认流畅（256K@1080P）。
-const MAX_TIER: u8 = 3;
+/// 画质七档（0=极简 32K 1=省流 128K 2=标清 512K 3=流畅 1M 4=清晰 2M 5=高清 8M 6=超清 16M），
+/// 默认流畅（1M@1080P）。
+const MAX_TIER: u8 = 6;
 /// 分辨率四档百分比（50/70/90/100），默认 100。
 const SCALE_STEPS: [u8; 4] = [50, 70, 90, 100];
+/// 屏幕下拉「无」：SCREEN_SEL 存 usize::MAX = 停止推流（连接与控制保持）。
+const NO_SCREEN: usize = usize::MAX;
+/// 画质档名（与 index.html 下拉一一对应）。
+const TIER_LABELS: [&str; 7] = ["极简", "省流", "标清", "流畅", "清晰", "高清", "超清"];
 
 /// 会话共享配置：控制消息热改，帧任务热读。
 struct StreamCfg {
@@ -29,7 +36,7 @@ struct StreamCfg {
 impl StreamCfg {
     fn new() -> Self {
         Self {
-            tier: std::sync::atomic::AtomicU8::new(0),
+            tier: std::sync::atomic::AtomicU8::new(3), // 默认流畅 1M
             scale: std::sync::atomic::AtomicU8::new(100),
             fps: std::sync::atomic::AtomicU64::new(DEFAULT_FPS),
         }
@@ -102,28 +109,47 @@ async fn handle_socket(mut socket: WebSocket) {
         let tx = tx.clone();
         let cfg = cfg.clone();
         tokio::spawn(async move {
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             {
                 stream_vpx(tx, cfg).await;
             }
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             loop {
+                // 屏幕=「无」：停止推流（不抓不编码），连接与控制保持
+                if crate::capture::SCREEN_SEL.load(std::sync::atomic::Ordering::Relaxed) == NO_SCREEN {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    continue;
+                }
                 let tier = cfg.tier();
                 let scale = cfg.scale();
                 let fps = cfg.fps();
+                let cap_ts = now_ms();
                 // 捕获是阻塞调用，丢到 blocking 线程
                 let frame = tokio::task::spawn_blocking(move || {
+                    let t0 = std::time::Instant::now();
                     let img = crate::capture::grab(&Default::default())?;
+                    let tg = t0.elapsed();
+                    let t1 = std::time::Instant::now();
                     let img = crate::capture::resize_rgba(&img, scale);
-                    crate::capture::encode_jpeg(&img, crate::capture::tier_jpeg_quality(tier))
+                    let jpeg =
+                        crate::capture::encode_jpeg(&img, crate::capture::tier_jpeg_quality(tier))?;
+                    let te = t1.elapsed();
+                    tracing::debug!(
+                        "frame {}x{} grab={tg:?} encode={te:?} {}B",
+                        img.width(),
+                        img.height(),
+                        jpeg.len()
+                    );
+                    Ok::<_, anyhow::Error>(jpeg)
                 })
                 .await;
                 match frame {
                     Ok(Ok(jpeg)) => {
-                        // 帧 framing：[type=1 jpeg][key][len u32 LE][data]
-                        let mut msg = vec![1u8, 0, 0, 0, 0, 0];
+                        // 帧 framing：[type=1 jpeg][key][len u32 LE][capture_ts u64 LE][data]
+                        let mut msg = vec![1u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
                         let n = jpeg.len() as u32;
                         msg[2..6].copy_from_slice(&n.to_le_bytes());
+                        msg[6..14].copy_from_slice(&cap_ts.to_le_bytes());
                         msg.extend_from_slice(&jpeg);
                         if tx.send(msg).await.is_err() {
                             return;
@@ -213,15 +239,19 @@ async fn handle_control(v: &Value, cfg: &StreamCfg) -> String {
                     .iter()
                     .map(|(id, sw, sh)| serde_json::json!({"id": id, "w": sw, "h": sh}))
                     .collect();
+                let sel = crate::capture::SCREEN_SEL.load(std::sync::atomic::Ordering::Relaxed);
                 Ok(serde_json::json!({"ok":true,"x":x,"y":y,"screen_w":w,"screen_h":h,
-                    "screen": crate::capture::SCREEN_SEL.load(std::sync::atomic::Ordering::Relaxed),
+                    "screen": if sel == NO_SCREEN { -1 } else { sel as i64 },
                     "screens": screens}))
             }
             "screen" => {
-                let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
-                crate::capture::SCREEN_SEL.store(id, std::sync::atomic::Ordering::Relaxed);
-                Ok(serde_json::json!({"ok":true,"screen":id}))
+                // id<0（下拉「无」）→ NO_SCREEN：停止推流，连接与控制保持
+                let id = v.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
+                let sel = if id < 0 { NO_SCREEN } else { id as usize };
+                crate::capture::SCREEN_SEL.store(sel, std::sync::atomic::Ordering::Relaxed);
+                Ok(serde_json::json!({"ok":true,"screen": if sel == NO_SCREEN { -1 } else { sel as i64 }}))
             }
+            "ping" => Ok(serde_json::json!({"ok":true,"ts": v.get("ts").cloned().unwrap_or(Value::Null), "server_ts": now_ms()})),
             "clip_get" => Ok(serde_json::json!({"ok":true,"text":crate::input::clipboard_get().map_err(|e| e.to_string())?})),
             "clip_set" => {
                 let text = v.get("text").and_then(|x| x.as_str()).ok_or("text required")?;
@@ -229,10 +259,9 @@ async fn handle_control(v: &Value, cfg: &StreamCfg) -> String {
                 Ok(json_ok("clip"))
             }
             "quality" => {
-                let tier = v.get("v").and_then(|x| x.as_u64()).unwrap_or(0).min(MAX_TIER as u64) as u8;
+                let tier = v.get("v").and_then(|x| x.as_u64()).unwrap_or(3).min(MAX_TIER as u64) as u8;
                 cfg.tier.store(tier, std::sync::atomic::Ordering::Relaxed);
-                let labels = ["流畅", "清晰", "高清", "超清"];
-                Ok(serde_json::json!({"ok":true,"tier":tier,"label":labels[tier as usize],
+                Ok(serde_json::json!({"ok":true,"tier":tier,"label":TIER_LABELS[tier as usize],
                     "jpeg_quality": crate::capture::tier_jpeg_quality(tier)}))
             }
             "scale" => {
@@ -254,10 +283,15 @@ async fn handle_control(v: &Value, cfg: &StreamCfg) -> String {
         }
     }
     .await;
-    match r {
-        Ok(v) => v.to_string(),
-        Err(e) => serde_json::json!({"ok":false,"error":e}).to_string(),
+    // 所有响应回带 t=请求类型，前端据此分发（pos/clip/ping 等）
+    let mut val = match r {
+        Ok(v) => v,
+        Err(e) => serde_json::json!({"ok":false,"error":e}),
+    };
+    if let Value::Object(m) = &mut val {
+        m.insert("t".into(), Value::String(t.into()));
     }
+    val.to_string()
 }
 
 fn xy(v: &Value) -> Result<(i64, i64), String> {
@@ -270,16 +304,32 @@ fn json_ok(status: &str) -> Value {
     serde_json::json!({"ok":true,"status":status})
 }
 
-/// Windows：DXGI 采集 + VP8（RustDesk scrap），帧 framing [type=2][key][len LE][data]。
+/// 服务端毫秒时间戳（帧头采集时刻 + ping 时钟同步用，画面延迟=上屏-采集）。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Windows/macOS：DXGI/Quartz 采集 + VP8（RustDesk scrap），帧 framing [type=2][key][len LE][data]。
 /// VP8 初始化或连续编码失败时回退 JPEG（xcap），保证浏览器始终有画面。
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 async fn stream_vpx(tx: mpsc::Sender<Vec<u8>>, cfg: std::sync::Arc<StreamCfg>) {
     let handle = tokio::task::spawn_blocking(move || {
         let sel = &crate::capture::SCREEN_SEL;
         let mut last_screen = sel.load(std::sync::atomic::Ordering::Relaxed);
         let mut last_tier = cfg.tier();
         let mut last_scale = cfg.scale();
-        let mut stream = match crate::vpx::VpxStream::new(sel, crate::vpx::tier_ratio(last_tier), last_scale) {
+        let mut last_fps = cfg.fps();
+        // JPEG 回退态下定期重试 VP8（自愈）
+        let mut last_retry = std::time::Instant::now();
+        let mut stream = match crate::vpx::VpxStream::new(
+            sel,
+            crate::vpx::tier_kbps(last_tier),
+            last_scale,
+            last_fps,
+        ) {
             Ok(s) => Some(s),
             Err(e) => {
                 tracing::error!("vpx init failed, falling back to jpeg: {e:#}");
@@ -288,28 +338,63 @@ async fn stream_vpx(tx: mpsc::Sender<Vec<u8>>, cfg: std::sync::Arc<StreamCfg>) {
         };
         let mut vpx_errs: u32 = 0;
         loop {
-            // 多屏/画质/分辨率任一变化 → 重建采集+编码器
+            // 多屏/画质/分辨率/帧率任一变化 → 重建采集+编码器
             let cur_screen = sel.load(std::sync::atomic::Ordering::Relaxed);
+            if cur_screen == NO_SCREEN {
+                // 屏幕=「无」：停止推流（不抓不编码），连接与控制保持
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                continue;
+            }
             let cur_tier = cfg.tier();
             let cur_scale = cfg.scale();
-            if cur_screen != last_screen || cur_tier != last_tier || cur_scale != last_scale {
+            let cur_fps = cfg.fps();
+            if cur_screen != last_screen || cur_scale != last_scale || cur_fps != last_fps {
+                // 屏幕/分辨率/帧率变化 → 重建采集+编码器（帧率影响关键帧间隔 10×fps）
                 last_screen = cur_screen;
                 last_tier = cur_tier;
                 last_scale = cur_scale;
-                stream = crate::vpx::VpxStream::new(sel, crate::vpx::tier_ratio(last_tier), last_scale)
+                last_fps = cur_fps;
+                stream = crate::vpx::VpxStream::new(
+                    sel,
+                    crate::vpx::tier_kbps(last_tier),
+                    last_scale,
+                    last_fps,
+                )
                     .map(Some)
                     .unwrap_or_else(|e| {
                         tracing::error!("vpx rescreen/reconfig failed: {e:#}");
                         None
                     });
+            } else if cur_tier != last_tier {
+                // 仅画质档变化 → 热调码率（不重建采集，画面不中断）
+                last_tier = cur_tier;
+                if let Some(st) = stream.as_mut() {
+                    if let Err(e) = st.set_tier(crate::vpx::tier_kbps(cur_tier)) {
+                        tracing::error!("vpx set_quality failed: {e:#}, rebuilding");
+                        stream = crate::vpx::VpxStream::new(
+                            sel,
+                            crate::vpx::tier_kbps(cur_tier),
+                            last_scale,
+                            last_fps,
+                        )
+                        .map(Some)
+                        .unwrap_or_else(|e| {
+                            tracing::error!("vpx rebuild failed: {e:#}");
+                            None
+                        });
+                    }
+                }
             }
             if let Some(st) = stream.as_mut() {
+                let cap_ts = now_ms();
                 match st.encode_one() {
                     Ok(Some(f)) => {
                         vpx_errs = 0;
-                        let mut msg = vec![2u8, f.key as u8, 0, 0, 0, 0];
+                        // 帧 framing：[type=2 vp8][key][len u32 LE][capture_ts u64 LE][data]
+                        let mut msg = vec![2u8, f.key as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
                         let n = f.data.len() as u32;
                         msg[2..6].copy_from_slice(&n.to_le_bytes());
+                        msg[6..14].copy_from_slice(&cap_ts.to_le_bytes());
                         msg.extend_from_slice(&f.data);
                         if tx.blocking_send(msg).is_err() {
                             return;
@@ -335,18 +420,38 @@ async fn stream_vpx(tx: mpsc::Sender<Vec<u8>>, cfg: std::sync::Arc<StreamCfg>) {
                     }
                 }
             }
+            // JPEG 回退态：定期重试 VP8，恢复后自动切回（自愈）
+            if stream.is_none() && last_retry.elapsed() >= std::time::Duration::from_secs(15) {
+                last_retry = std::time::Instant::now();
+                match crate::vpx::VpxStream::new(
+                    sel,
+                    crate::vpx::tier_kbps(cfg.tier()),
+                    cfg.scale(),
+                    cfg.fps(),
+                )
+                {
+                    Ok(s) => {
+                        tracing::info!("vpx recovered, switching back from jpeg");
+                        stream = Some(s);
+                        continue;
+                    }
+                    Err(e) => tracing::warn!("vpx retry failed: {e:#}"),
+                }
+            }
             // JPEG 回退路径（跟随 tier/scale 热调）
             let tier = cfg.tier();
             let scale = cfg.scale();
             let fps = cfg.fps();
+            let cap_ts = now_ms();
             match crate::capture::grab(&Default::default())
                 .map(|f| crate::capture::resize_rgba(&f, scale))
                 .and_then(|f| crate::capture::encode_jpeg(&f, crate::capture::tier_jpeg_quality(tier)))
             {
                 Ok(jpeg) => {
-                    let mut msg = vec![1u8, 0, 0, 0, 0, 0];
+                    let mut msg = vec![1u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
                     let n = jpeg.len() as u32;
                     msg[2..6].copy_from_slice(&n.to_le_bytes());
+                    msg[6..14].copy_from_slice(&cap_ts.to_le_bytes());
                     msg.extend_from_slice(&jpeg);
                     if tx.blocking_send(msg).is_err() {
                         return;

@@ -33,6 +33,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libx11-dev libxcb1-dev libxdo-dev libxkbcommon-dev libxkbcommon-x11-dev
       - name: Build (glibc 2.28)
         run: cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28
+      - name: Pack (UPX)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl
+          BIN=target/aarch64-unknown-linux-gnu/release/npa-remote
+          BEFORE=$(wc -c < "$BIN")
+          upx -9 "$BIN"
+          echo "pack: $BEFORE -> $(wc -c < "$BIN")"
+          "$BIN" --help > /dev/null
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -94,6 +102,25 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Pack (UPX)
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          BEFORE=$(wc -c < "$BIN")
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            curl -fsSL --http1.1 -o /tmp/upx.zip https://github.com/upx/upx/releases/download/v5.3.0/upx-5.3.0-win64.zip
+            unzip -qo /tmp/upx.zip -d /tmp/upx
+            UPX=$(ls /tmp/upx/upx-*/upx.exe | head -1)
+          else
+            sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl
+            UPX=upx
+          fi
+          "$UPX" -9 "$BIN"
+          AFTER=$(wc -c < "$BIN")
+          echo "pack: $BEFORE -> $AFTER"
+          # 冒烟：UPX 后必须还能跑，跑不起来就让 job 失败
+          "$BIN" --help > /dev/null
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -145,6 +172,22 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
+      - name: Pack (UPX 4.2.4, macOS)
+        run: |
+          # brew 的 upx 5.3.0 其 --force-macos 产出的二进制启动即崩，必须用 4.2.4 源码版
+          curl -fsSL --http1.1 -o /tmp/upx-src.tar.xz https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-src.tar.xz
+          tar -xJf /tmp/upx-src.tar.xz -C /tmp
+          cmake -S /tmp/upx-4.2.4-src -B /tmp/upx-4.2.4-src/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/upx-4.2.4-src/build -j4 --target upx
+          BIN=target/${{ matrix.target }}/release/${{ matrix.bin }}
+          BEFORE=$(wc -c < "$BIN")
+          # arm64-macos 不受支持（打包失败保留原文件），amd64 走 --force-macos
+          /tmp/upx-4.2.4-src/build/upx -9 "$BIN" \
+            || /tmp/upx-4.2.4-src/build/upx --force-macos -9 "$BIN" \
+            || true
+          echo "pack: $BEFORE -> $(wc -c < "$BIN")"
+          # 冒烟：压过必须能跑，没压成（arm64）跑原版也应通过
+          "$BIN" --help > /dev/null
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

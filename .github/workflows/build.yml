@@ -106,7 +106,38 @@ jobs:
 
       - name: Install vpx deps (linux only)
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y libvpx-dev libyuv-dev libaom-dev
+        run: |
+          sudo apt-get install -y libvpx-dev libyuv-dev libaom-dev
+          # Ubuntu 的 libyuv-dev 不提供 .pc 文件，手动写让 pkg-config 能找到
+          LIBYUV_PC="/usr/lib/x86_64-linux-gnu/pkgconfig/libyuv.pc"
+          sudo mkdir -p "$(dirname "$LIBYUV_PC")"
+          sudo tee "$LIBYUV_PC" << 'PCEOF'
+          prefix=/usr
+          exec_prefix=${prefix}
+          libdir=/usr/lib/x86_64-linux-gnu
+          includedir=${prefix}/include
+          Name: libyuv
+          Description: YUV conversion library
+          Version: 0.0.1922
+          Libs: -L${libdir} -lyuv
+          Cflags: -I${includedir}
+          PCEOF
+          # arm64 runner 路径不同
+          if [ -d /usr/lib/aarch64-linux-gnu ]; then
+            LIBYUV_PC_ARM="/usr/lib/aarch64-linux-gnu/pkgconfig/libyuv.pc"
+            sudo mkdir -p "$(dirname "$LIBYUV_PC_ARM")"
+            sudo tee "$LIBYUV_PC_ARM" << 'PCEOF'
+          prefix=/usr
+          exec_prefix=${prefix}
+          libdir=/usr/lib/aarch64-linux-gnu
+          includedir=${prefix}/include
+          Name: libyuv
+          Description: YUV conversion library
+          Version: 0.0.1922
+          Libs: -L${libdir} -lyuv
+          Cflags: -I${includedir}
+          PCEOF
+          fi
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}

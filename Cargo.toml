@@ -38,6 +38,8 @@ base = { path = "third_party/rustdesk/libs/base" }
 [build-dependencies]
 cc = "1"
 
+openssl-sys = { version = "0.9", features = ["vendored"] }
+
 [profile.release]
 opt-level = 2
 lto = true

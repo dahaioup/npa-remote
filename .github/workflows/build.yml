@@ -31,6 +31,8 @@ jobs:
           targets: aarch64-unknown-linux-gnu
       - name: Install link deps
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libx11-dev libxcb1-dev libxdo-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - name: Install vpx deps (linux-uos)
+        run: sudo apt-get install -y libvpx-dev libyuv-dev libaom-dev
       - name: Build (glibc 2.28)
         run: cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28
         env:
@@ -101,6 +103,10 @@ jobs:
         if: matrix.vpx == 'true'
         shell: pwsh
         run: vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static aom:x64-windows-static
+
+      - name: Install vpx deps (linux only)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libvpx-dev libyuv-dev libaom-dev
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}

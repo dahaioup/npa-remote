@@ -11,7 +11,7 @@ serde = { version = "1", features = ["derive"] }
 local-ip-address = "0.6"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.7", default-features = false, features = ["ws", "http1", "tokio", "json", "query"] }
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rcgen = "0.13"
@@ -39,6 +39,11 @@ base = { path = "third_party/rustdesk/libs/base" }
 cc = "1"
 
 openssl-sys = { version = "0.9", features = ["vendored"] }
+
+# OpenSSL vendored：从源码编译，交叉编译不依赖系统头文件
+
+# 覆盖 tokio-tungstenite：禁用 native-tls，用 rustls（交叉编译不需要 OpenSSL）
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["rustls-tls-native-roots", "connect", "handshake"] }
 
 [profile.release]
 opt-level = 2

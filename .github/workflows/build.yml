@@ -38,6 +38,10 @@ jobs:
         env:
           # webm-sys 的 libwebm C++ 代码在新 GCC 上缺 #include <cstdint>，强制注入
           CXXFLAGS: "-include cstdint"
+          # openssl-sys：显式指向系统 OpenSSL（zigcc 的默认搜索路径找不到）
+          OPENSSL_DIR: /usr
+          OPENSSL_INCLUDE_DIR: /usr/include
+          OPENSSL_LIB_DIR: /usr/lib/aarch64-linux-gnu
       - name: Pack (UPX)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl

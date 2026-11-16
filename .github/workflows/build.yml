@@ -20,7 +20,7 @@ jobs:
             git clone --depth 1 https://github.com/rustdesk/hbb_common third_party/rustdesk/libs/hbb_common
           fi
           rm -rf third_party/rustdesk/libs/base
-          git clone --depth 1 https://github.com/rustdesk/base third_party/rustdesk/libs/base
+          git clone --depth 1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/rustdesk/base third_party/rustdesk/libs/base
       - name: Patch scrap for rust 1.100
         run: |
           sed -i 's/breakdown_signal_handler as _/breakdown_signal_handler as *const () as _/' third_party/rustdesk/libs/base/src/platform/mod.rs
@@ -101,7 +101,7 @@ jobs:
           fi
           if [ ! -f third_party/rustdesk/libs/base/Cargo.toml ]; then
             rm -rf third_party/rustdesk/libs/base
-          git clone --depth 1 https://github.com/rustdesk/base third_party/rustdesk/libs/base
+          git clone --depth 1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/rustdesk/base third_party/rustdesk/libs/base
           fi
 
       - name: Install Rust
@@ -216,7 +216,7 @@ jobs:
           fi
           if [ ! -f third_party/rustdesk/libs/base/Cargo.toml ]; then
             rm -rf third_party/rustdesk/libs/base
-          git clone --depth 1 https://github.com/rustdesk/base third_party/rustdesk/libs/base
+          git clone --depth 1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/rustdesk/base third_party/rustdesk/libs/base
           fi
       - name: Install vpx deps (macOS)
         run: |

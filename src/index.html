@@ -15,7 +15,7 @@ fetch('/api/info').then(r=>r.json()).then(d=>{
   #bar{display:flex;gap:8px;align-items:center;padding:8px;background:#1b1b1b;flex-wrap:wrap;flex:none}
   input,button,select{background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:4px;padding:4px 8px}
   button{cursor:pointer}
-  #view{display:block;width:100%;flex:1;min-height:0;object-fit:contain;cursor:crosshair}
+  #view{display:block;width:100%;flex:1;min-height:0;object-fit:contain;cursor:crosshair;touch-action:none}
   #status{margin-left:auto;font-size:12px;color:#8a8;white-space:nowrap}
   #clip{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8a8;font-size:12px}
 </style>
@@ -199,10 +199,15 @@ document.getElementById('screenSel').onchange = e=>{
 document.getElementById('fps').onchange = e=> send({t:'fps',v:+e.target.value});
 document.getElementById('text').onkeydown = e=>{
   if(e.key==='Enter'){ const t=e.target.value; e.target.value=''; send({t:'type',text:t}); }
+  e.stopPropagation();
 };
+document.getElementById('text').addEventListener('blur', e=>{ e.target.blur(); });
+
 document.getElementById('combo').onkeydown = e=>{
   if(e.key==='Enter'){ const c=e.target.value; e.target.value=''; send({t:'hotkey',combo:c}); }
+  e.stopPropagation();
 };
+document.getElementById('combo').addEventListener('blur', e=>{ e.target.blur(); });
 document.getElementById('btnClipSet').onclick = ()=> send({t:'clip_set',text:document.getElementById('text').value});
 document.getElementById('btnClipGet').onclick = ()=> send({t:'clip_get'});
 document.getElementById('btnFull').onclick = ()=> view.requestFullscreen?.();
@@ -220,6 +225,10 @@ function plainKey(e){
 }
 document.addEventListener('keydown', e=>{
   if(e.target.tagName==='INPUT') return;
+  // 单独按 Shift：切换目标设备输入法，不做本地焦点切换
+  if(e.key==='Shift' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat){
+    e.preventDefault(); send({t:'ime'}); return;
+  }
   const plain = plainKey(e);
   if(plain!==null){ e.preventDefault(); send({t:'type',text:plain}); return; }
   // 带修饰键的组合

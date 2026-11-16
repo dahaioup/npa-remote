@@ -262,6 +262,10 @@ async fn handle_control(v: &Value, cfg: &StreamCfg) -> String {
                 crate::input::hotkey(combo).map_err(|e| e.to_string())?;
                 Ok(json_ok("hotkey"))
             }
+            "ime" => {
+                crate::input::toggle_ime().map_err(|e| e.to_string())?;
+                Ok(json_ok("ime"))
+            }
             "scroll" => {
                 let dy = v.get("dy").and_then(|x| x.as_i64()).unwrap_or(0);
                 // 先移到坐标（滚轮落点跟随鼠标位置）

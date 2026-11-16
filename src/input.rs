@@ -69,6 +69,32 @@ pub fn type_text(text: &str) -> Result<()> {
 
 /// 组合键："ctrl+v"、"cmd+shift+3"、"enter"。
 /// 修饰键名：ctrl/cmd/alt/shift/meta/win/super（大小写不敏感）。
+/// 单独按 Shift：切换目标设备输入法（Win+Space / mac 切换输入法快捷键）
+pub fn toggle_ime() -> Result<()> {
+    let mut e = enigo()?;
+    #[cfg(target_os = "windows")]
+    {
+        e.key(enigo::Key::Meta, enigo::Direction::Press)?;
+        e.key(enigo::Key::Space, enigo::Direction::Click)?;
+        e.key(enigo::Key::Meta, enigo::Direction::Release)?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // macOS 默认输入法切换：Control+Space 或 Ctrl+Option+Space
+        e.key(enigo::Key::Control, enigo::Direction::Press)?;
+        e.key(enigo::Key::Space, enigo::Direction::Click)?;
+        e.key(enigo::Key::Control, enigo::Direction::Release)?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Linux 常见：Super+Space
+        e.key(enigo::Key::Meta, enigo::Direction::Press)?;
+        e.key(enigo::Key::Space, enigo::Direction::Click)?;
+        e.key(enigo::Key::Meta, enigo::Direction::Release)?;
+    }
+    Ok(())
+}
+
 pub fn hotkey(combo: &str) -> Result<()> {
     let parts: Vec<&str> = combo
         .split(['+', ' '])

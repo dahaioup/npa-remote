@@ -93,12 +93,10 @@ jobs:
         shell: bash
         run: |
           git clone --depth 1 https://github.com/rustdesk/rustdesk third_party/rustdesk
-          git -C third_party/rustdesk submodule update --init libs/hbb_common libs/base
+          git -C third_party/rustdesk submodule update --init libs/hbb_common
           if [ ! -f third_party/rustdesk/libs/hbb_common/Cargo.toml ]; then
             git clone --depth 1 https://github.com/rustdesk/hbb_common third_party/rustdesk/libs/hbb_common
           fi
-          if [ ! -f third_party/rustdesk/libs/base/Cargo.toml ]; then
-            fi
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.99.1
@@ -206,12 +204,10 @@ jobs:
         shell: bash
         run: |
           git clone --depth 1 https://github.com/rustdesk/rustdesk third_party/rustdesk
-          git -C third_party/rustdesk submodule update --init libs/hbb_common libs/base
+          git -C third_party/rustdesk submodule update --init libs/hbb_common
           if [ ! -f third_party/rustdesk/libs/hbb_common/Cargo.toml ]; then
             git clone --depth 1 https://github.com/rustdesk/hbb_common third_party/rustdesk/libs/hbb_common
           fi
-          if [ ! -f third_party/rustdesk/libs/base/Cargo.toml ]; then
-            fi
       - name: Install vpx deps (macOS)
         run: |
           brew install libvpx aom

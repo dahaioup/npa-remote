@@ -19,6 +19,7 @@ jobs:
           if [ ! -f third_party/rustdesk/libs/hbb_common/Cargo.toml ]; then
             git clone --depth 1 https://github.com/rustdesk/hbb_common third_party/rustdesk/libs/hbb_common
           fi
+          rm -rf third_party/rustdesk/libs/base
           git clone --depth 1 https://github.com/rustdesk/base third_party/rustdesk/libs/base
       - name: Patch scrap for rust 1.100
         run: |
@@ -99,7 +100,8 @@ jobs:
             git clone --depth 1 https://github.com/rustdesk/hbb_common third_party/rustdesk/libs/hbb_common
           fi
           if [ ! -f third_party/rustdesk/libs/base/Cargo.toml ]; then
-            git clone --depth 1 https://github.com/rustdesk/base third_party/rustdesk/libs/base
+            rm -rf third_party/rustdesk/libs/base
+          git clone --depth 1 https://github.com/rustdesk/base third_party/rustdesk/libs/base
           fi
 
       - name: Install Rust
@@ -213,7 +215,8 @@ jobs:
             git clone --depth 1 https://github.com/rustdesk/hbb_common third_party/rustdesk/libs/hbb_common
           fi
           if [ ! -f third_party/rustdesk/libs/base/Cargo.toml ]; then
-            git clone --depth 1 https://github.com/rustdesk/base third_party/rustdesk/libs/base
+            rm -rf third_party/rustdesk/libs/base
+          git clone --depth 1 https://github.com/rustdesk/base third_party/rustdesk/libs/base
           fi
       - name: Install vpx deps (macOS)
         run: |

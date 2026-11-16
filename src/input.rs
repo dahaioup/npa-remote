@@ -108,13 +108,33 @@ pub fn mouse_move(x: i64, y: i64) -> Result<()> {
     Ok(())
 }
 
-pub fn mouse_click(button: &str, count: u32) -> Result<()> {
-    let btn = match button.to_ascii_lowercase().as_str() {
-        "left" | "" => enigo::Button::Left,
-        "right" => enigo::Button::Right,
-        "middle" => enigo::Button::Middle,
+/// 鼠标按下（按住不放，配合 mouse_up 实现拖选/拖窗口）。
+pub fn mouse_down(button: &str) -> Result<()> {
+    let btn = parse_button(button)?;
+    let mut e = enigo()?;
+    e.button(btn, enigo::Direction::Press)?;
+    Ok(())
+}
+
+/// 鼠标抬起（结束按住）。
+pub fn mouse_up(button: &str) -> Result<()> {
+    let btn = parse_button(button)?;
+    let mut e = enigo()?;
+    e.button(btn, enigo::Direction::Release)?;
+    Ok(())
+}
+
+fn parse_button(button: &str) -> Result<enigo::Button> {
+    match button.to_ascii_lowercase().as_str() {
+        "left" | "" => Ok(enigo::Button::Left),
+        "right" => Ok(enigo::Button::Right),
+        "middle" => Ok(enigo::Button::Middle),
         _ => bail!("unknown button: {button}"),
-    };
+    }
+}
+
+pub fn mouse_click(button: &str, count: u32) -> Result<()> {
+    let btn = parse_button(button)?;
     let n = count.clamp(1, 3);
     let mut e = enigo()?;
     for _ in 0..n {

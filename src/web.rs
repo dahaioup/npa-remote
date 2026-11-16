@@ -212,6 +212,28 @@ async fn handle_control(v: &Value, cfg: &StreamCfg) -> String {
                 crate::input::mouse_click(button, count).map_err(|e| e.to_string())?;
                 Ok(json_ok("clicked"))
             }
+            "down" => {
+                // 按下不放：拖选/拖窗口的前半段（先移坐标再按）
+                let button = v.get("button").and_then(|x| x.as_str()).unwrap_or("left");
+                if let Ok((x, y)) = xy(v) {
+                    let (ex, ey) = map_frame_to_enigo(x, y, cfg.scale());
+                    crate::input::mouse_move(ex, ey).map_err(|e| e.to_string())?;
+                }
+                crate::input::mouse_down(button).map_err(|e| e.to_string())?;
+                Ok(json_ok("down"))
+            }
+            "up" => {
+                // 抬起：拖选/拖窗口的后半段（x/y 可能为 -1=mouseleave 兜底，只抬不移）
+                let button = v.get("button").and_then(|x| x.as_str()).unwrap_or("left");
+                if let Ok((x, y)) = xy(v) {
+                    if x >= 0 && y >= 0 {
+                        let (ex, ey) = map_frame_to_enigo(x, y, cfg.scale());
+                        crate::input::mouse_move(ex, ey).map_err(|e| e.to_string())?;
+                    }
+                }
+                crate::input::mouse_up(button).map_err(|e| e.to_string())?;
+                Ok(json_ok("up"))
+            }
             "type" => {
                 let text = v.get("text").and_then(|x| x.as_str()).ok_or("text required")?;
                 crate::input::type_text(text).map_err(|e| e.to_string())?;

@@ -158,6 +158,24 @@ function toScreen(e){
   };
 }
 view.addEventListener('mousemove', e=>{ const p=toScreen(e); if(p) send({t:'move',x:p.x,y:p.y}); });
+// mousedown/mouseup 分离：支持拖选、拖窗口（按住移动 vs 单击）
+let dragging = false;
+view.addEventListener('mousedown', e=>{
+  e.preventDefault();
+  const p=toScreen(e); if(!p) return;
+  dragging = true;
+  const btn = e.button===2 ? 'right' : e.button===1 ? 'middle' : 'left';
+  send({t:'down',x:p.x,y:p.y,button:btn});
+});
+view.addEventListener('mouseup', e=>{
+  if(!dragging) return;
+  dragging = false;
+  const p=toScreen(e); if(!p) return;
+  const btn = e.button===2 ? 'right' : e.button===1 ? 'middle' : 'left';
+  send({t:'up',x:p.x,y:p.y,button:btn});
+});
+// mouseleave 兜底：拖出画布也要发 up，否则远端一直按住
+view.addEventListener('mouseleave', ()=>{ if(dragging){ dragging=false; send({t:'up',x:-1,y:-1,button:'left'}); } });
 view.addEventListener('click', e=>{ const p=toScreen(e); if(p) send({t:'click',x:p.x,y:p.y,button:'left'}); });
 view.addEventListener('contextmenu', e=>{ e.preventDefault(); const p=toScreen(e); if(p) send({t:'click',x:p.x,y:p.y,button:'right'}); });
 view.addEventListener('dblclick', e=>{ const p=toScreen(e); if(p) send({t:'click',x:p.x,y:p.y,button:'left',count:2}); });

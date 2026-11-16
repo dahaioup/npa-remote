@@ -207,13 +207,27 @@ document.getElementById('btnClipSet').onclick = ()=> send({t:'clip_set',text:doc
 document.getElementById('btnClipGet').onclick = ()=> send({t:'clip_get'});
 document.getElementById('btnFull').onclick = ()=> view.requestFullscreen?.();
 // 本地键盘拦截：焦点不在输入框时，把按键当组合键透传
+// 单字符/空格/回车等无修饰键 → type（打字符）；带修饰键 → hotkey
+const isMac = navigator.platform.toUpperCase().includes('MAC');
+const codeToKey = {Space:' ',Enter:'\r',Backspace:'\x08',Tab:'\t',Escape:'\x1b',
+  ArrowUp:'\x1b[A',ArrowDown:'\x1b[B',ArrowRight:'\x1b[C',ArrowLeft:'\x1b[D',
+  Home:'\x1b[H',End:'\x1b[F',PageUp:'\x1b[5~',PageDown:'\x1b[6~',Delete:'\x1b[3~',Insert:'\x1b[2~'};
+function plainKey(e){
+  if(e.ctrlKey||e.metaKey||e.altKey) return null;
+  if(e.key.length===1) return e.key;
+  if(e.key===' ') return ' ';
+  return codeToKey[e.code] || null;
+}
 document.addEventListener('keydown', e=>{
   if(e.target.tagName==='INPUT') return;
+  const plain = plainKey(e);
+  if(plain!==null){ e.preventDefault(); send({t:'type',text:plain}); return; }
+  // 带修饰键的组合
   const parts=[];
-  if(e.ctrlKey) parts.push('ctrl'); if(e.metaKey) parts.push('cmd');
+  if(e.ctrlKey) parts.push('ctrl'); if(e.metaKey) parts.push(isMac?'cmd':'win');
   if(e.altKey) parts.push('alt'); if(e.shiftKey) parts.push('shift');
-  const k = e.key.length===1? e.key : e.key.toLowerCase();
   if(['Control','Meta','Alt','Shift'].includes(e.key)) return;
+  const k = e.key.length===1? e.key : e.key.toLowerCase();
   parts.push(k); e.preventDefault(); send({t:'hotkey',combo:parts.join('+')});
 });
 </script>

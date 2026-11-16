@@ -10,13 +10,60 @@ fn enigo() -> Result<Enigo> {
 }
 
 /// 打字（Unicode 文本路径，中文/英文都行）。
+/// 特殊控制字符映射：\r→Enter、\x08→Backspace、\t→Tab、\x1b→Escape、
+/// \x1b[A/B/C/D→方向键、\x1b[H/F→Home/End、\x1b[3~→Delete、\x1b[5~/6~→PgUp/PgDn、\x1b[2~→Insert。
 pub fn type_text(text: &str) -> Result<()> {
     let chars = text.chars().count();
     if chars == 0 || chars > MAX_TEXT {
         bail!("text length must be 1..={MAX_TEXT}");
     }
     let mut e = enigo()?;
-    e.text(text)?;
+    let mut iter = text.chars().peekable();
+    while let Some(c) = iter.next() {
+        match c {
+            '\r' | '\n' => { e.key(enigo::Key::Return, enigo::Direction::Click)?; }
+            '\x08' => { e.key(enigo::Key::Backspace, enigo::Direction::Click)?; }
+            '\t' => { e.key(enigo::Key::Tab, enigo::Direction::Click)?; }
+            '\x1b' => {
+                // ESC 序列：\x1b[X 或 \x1b[NN~
+                match iter.next() {
+                    Some('[') => {
+                        match iter.next() {
+                            Some('A') => e.key(enigo::Key::UpArrow, enigo::Direction::Click)?,
+                            Some('B') => e.key(enigo::Key::DownArrow, enigo::Direction::Click)?,
+                            Some('C') => e.key(enigo::Key::RightArrow, enigo::Direction::Click)?,
+                            Some('D') => e.key(enigo::Key::LeftArrow, enigo::Direction::Click)?,
+                            Some('H') => e.key(enigo::Key::Home, enigo::Direction::Click)?,
+                            Some('F') => e.key(enigo::Key::End, enigo::Direction::Click)?,
+                            Some('3') => { e.key(enigo::Key::Delete, enigo::Direction::Click)?; iter.next(); iter.next(); }
+                            Some('5') => { e.key(enigo::Key::PageUp, enigo::Direction::Click)?; iter.next(); iter.next(); }
+                            Some('6') => { e.key(enigo::Key::PageDown, enigo::Direction::Click)?; iter.next(); iter.next(); }
+                            Some('2') => { /* Insert 无 enigo 键，跳过 */ iter.next(); iter.next(); }
+                            _ => {} // 未知序列忽略
+                        }
+                    }
+                    Some('O') => {
+                        // \x1bOA 等 SS3 序列（F1-F4、Home/End）
+                        match iter.next() {
+                            Some('A') => e.key(enigo::Key::UpArrow, enigo::Direction::Click)?,
+                            Some('B') => e.key(enigo::Key::DownArrow, enigo::Direction::Click)?,
+                            Some('C') => e.key(enigo::Key::RightArrow, enigo::Direction::Click)?,
+                            Some('D') => e.key(enigo::Key::LeftArrow, enigo::Direction::Click)?,
+                            Some('H') => e.key(enigo::Key::Home, enigo::Direction::Click)?,
+                            Some('F') => e.key(enigo::Key::End, enigo::Direction::Click)?,
+                            Some('P') => e.key(enigo::Key::F1, enigo::Direction::Click)?,
+                            Some('Q') => e.key(enigo::Key::F2, enigo::Direction::Click)?,
+                            Some('R') => e.key(enigo::Key::F3, enigo::Direction::Click)?,
+                            Some('S') => e.key(enigo::Key::F4, enigo::Direction::Click)?,
+                            _ => {}
+                        }
+                    }
+                    _ => { e.key(enigo::Key::Escape, enigo::Direction::Click)?; }
+                }
+            }
+            _ => { e.text(&c.to_string())?; }
+        }
+    }
     Ok(())
 }
 

@@ -19,6 +19,10 @@ jobs:
           if [ ! -f third_party/rustdesk/libs/hbb_common/Cargo.toml ]; then
             git clone --depth 1 https://github.com/rustdesk/hbb_common third_party/rustdesk/libs/hbb_common
           fi
+          git clone --depth 1 https://github.com/rustdesk/base third_party/rustdesk/libs/base
+      - name: Patch scrap for rust 1.100
+        run: |
+          sed -i 's/breakdown_signal_handler as _/breakdown_signal_handler as *const () as _/' third_party/rustdesk/libs/base/src/platform/mod.rs
       - name: Install zig
         run: |
           curl -fsSL -o /tmp/zig.tar.xz https://ziglang.org/download/0.13.0/zig-linux-aarch64-0.13.0.tar.xz

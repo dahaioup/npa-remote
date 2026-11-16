@@ -42,17 +42,15 @@ jobs:
           sudo ln -sf /usr/include/aarch64-linux-gnu/openssl/configuration.h /usr/include/openssl/configuration.h 2>/dev/null || true
           # Ubuntu 的 libyuv-dev 不提供 .pc 文件，手动写
           sudo mkdir -p /usr/lib/aarch64-linux-gnu/pkgconfig
-          sudo tee /usr/lib/aarch64-linux-gnu/pkgconfig/libyuv.pc << 'EOF'
-prefix=/usr
-exec_prefix=${prefix}
-libdir=${exec_prefix}/lib/aarch64-linux-gnu
-includedir=${prefix}/include
-Name: libyuv
-Description: YUV conversion library
-Version: 0.0.1
-Libs: -L${libdir} -lyuv
-Cflags: -I${includedir}
-EOF
+          echo 'prefix=/usr
+          exec_prefix=${prefix}
+          libdir=${exec_prefix}/lib/aarch64-linux-gnu
+          includedir=${prefix}/include
+          Name: libyuv
+          Description: YUV conversion library
+          Version: 0.0.1
+          Libs: -L${libdir} -lyuv
+          Cflags: -I${includedir}' | sudo tee /usr/lib/aarch64-linux-gnu/pkgconfig/libyuv.pc
       - name: Build (glibc 2.28)
         run: cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28
         env:
@@ -134,17 +132,15 @@ EOF
           sudo ln -sf /usr/include/aarch64-linux-gnu/openssl/configuration.h /usr/include/openssl/configuration.h 2>/dev/null || true
           # Ubuntu 的 libyuv-dev 不提供 .pc 文件，手动写
           sudo mkdir -p /usr/lib/aarch64-linux-gnu/pkgconfig
-          sudo tee /usr/lib/aarch64-linux-gnu/pkgconfig/libyuv.pc << 'EOF'
-prefix=/usr
-exec_prefix=${prefix}
-libdir=${exec_prefix}/lib/aarch64-linux-gnu
-includedir=${prefix}/include
-Name: libyuv
-Description: YUV conversion library
-Version: 0.0.1
-Libs: -L${libdir} -lyuv
-Cflags: -I${includedir}
-EOF
+          echo 'prefix=/usr
+          exec_prefix=${prefix}
+          libdir=${exec_prefix}/lib/aarch64-linux-gnu
+          includedir=${prefix}/include
+          Name: libyuv
+          Description: YUV conversion library
+          Version: 0.0.1
+          Libs: -L${libdir} -lyuv
+          Cflags: -I${includedir}' | sudo tee /usr/lib/aarch64-linux-gnu/pkgconfig/libyuv.pc
           # Ubuntu 的 libyuv-dev 不提供 .pc 文件，手动写让 pkg-config 能找到
           LIBYUV_PC="/usr/lib/x86_64-linux-gnu/pkgconfig/libyuv.pc"
           sudo mkdir -p "$(dirname "$LIBYUV_PC")"

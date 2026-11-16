@@ -1,7 +1,7 @@
 // Windows：RustDesk scrap 采集（DXGI）+ VP8 编码（libvpx）。
 // macOS：scrap quartz（CoreGraphics）采集 + 同一 VP8 编码路径。
-// 仅在 windows/macos 目标编译；linux 走 capture.rs 的 JPEG 路径。
-#![cfg(any(target_os = "windows", target_os = "macos"))]
+// Linux：scrap x11 采集 + 同一 VP8 编码路径（需要 libvpx-dev + libaom-dev）。
+#![cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 
 use anyhow::{Context, Result};
 use scrap::{

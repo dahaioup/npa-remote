@@ -1,6 +1,6 @@
 [package]
 name = "npa-remote"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "AGPL-3.0"
 description = "NPA remote 插件：Web 远程控制 + 进阶截图/输入/剪贴板（可独立运行，也可作为 NPA 插件）"
@@ -8,6 +8,7 @@ description = "NPA remote 插件：Web 远程控制 + 进阶截图/输入/剪贴
 [dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
+local-ip-address = "0.6"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
 axum = { version = "0.7", features = ["ws"] }

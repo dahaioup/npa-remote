@@ -3,6 +3,12 @@
 <head>
 <meta charset="utf-8">
 <title>NPA 远程控制</title>
+<script>
+// 页面加载后把 IP+版本写进标题，方便多标签页区分
+fetch('/api/info').then(r=>r.json()).then(d=>{
+  document.title = `NPA 远程控制 ${d.ip||''} v${d.version||''}`;
+}).catch(()=>{});
+</script>
 <style>
   html,body{height:100%;overflow:hidden}
   body{margin:0;background:#111;color:#ddd;font:14px system-ui;display:flex;flex-direction:column}

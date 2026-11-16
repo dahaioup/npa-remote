@@ -67,6 +67,7 @@ pub async fn serve(bind: &str, port: u16) -> Result<()> {
     let addr = format!("{bind}:{port}");
     let app = Router::new()
         .route("/", get(index))
+        .route("/api/info", get(api_info))
         .route("/ws", get(ws_upgrade));
     // HTTPS（自签证书）：WebCodecs 需要 secure context，局域网裸 HTTP 会拿不到解码器。
     // 证书持久化在 exe 同目录，已有则复用（指纹稳定，浏览器信任一次即可）。
@@ -97,6 +98,23 @@ async fn index() -> Html<&'static str> {
     Html(INDEX)
 }
 
+/// GET /api/info — 返回本机 IP 列表 + 版本号（前端标题栏显示用）
+async fn api_info() -> axum::response::Json<serde_json::Value> {
+    let ips: Vec<String> = local_ip_address::list_afinet_netifas()
+        .map(|v| {
+            v.into_iter()
+                .filter(|(_, ip)| ip.is_ipv4() && !ip.is_loopback())
+                .map(|(_, ip)| ip.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    axum::response::Json(serde_json::json!({
+        "ip": ips.first().cloned().unwrap_or_default(),
+        "ips": ips,
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
 async fn ws_upgrade(ws: WebSocketUpgrade) -> axum::response::Response {
     ws.on_upgrade(handle_socket)
 }
@@ -109,11 +127,11 @@ async fn handle_socket(mut socket: WebSocket) {
         let tx = tx.clone();
         let cfg = cfg.clone();
         tokio::spawn(async move {
-            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
             {
                 stream_vpx(tx, cfg).await;
             }
-            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
             loop {
                 // 屏幕=「无」：停止推流（不抓不编码），连接与控制保持
                 if crate::capture::SCREEN_SEL.load(std::sync::atomic::Ordering::Relaxed) == NO_SCREEN {
@@ -336,7 +354,7 @@ fn now_ms() -> u64 {
 
 /// Windows/macOS：DXGI/Quartz 采集 + VP8（RustDesk scrap），帧 framing [type=2][key][len LE][data]。
 /// VP8 初始化或连续编码失败时回退 JPEG（xcap），保证浏览器始终有画面。
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 async fn stream_vpx(tx: mpsc::Sender<Vec<u8>>, cfg: std::sync::Arc<StreamCfg>) {
     let handle = tokio::task::spawn_blocking(move || {
         let sel = &crate::capture::SCREEN_SEL;

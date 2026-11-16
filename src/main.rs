@@ -9,7 +9,7 @@
 //
 // 许可证：AGPL-3.0（见 LICENSE）。
 mod capture;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 mod vpx;
 mod input;
 mod pluginrpc;

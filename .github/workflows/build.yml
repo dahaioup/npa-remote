@@ -105,7 +105,12 @@ jobs:
             -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
             -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \
             -DCMAKE_AR=llvm-ar -DCMAKE_RANLIB=llvm-ranlib \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_C_SIZEOF_VOID_P=8 -DCMAKE_CXX_SIZEOF_VOID_P=8 \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+            -DCMAKE_FIND_ROOT_PATH=$STATIC_ROOT
           cmake --build /tmp/libyuv-build -j4
           sudo cp /tmp/libyuv-build/libyuv.a $STATIC_ROOT/lib/libnpa_yuv.a
           sudo mkdir -p $STATIC_ROOT/include/libyuv

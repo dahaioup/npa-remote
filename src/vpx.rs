@@ -123,6 +123,8 @@ impl VpxStream {
         scale: u8,
         fps: u64,
     ) -> Result<Self> {
+        // sidecar/systemd 拉起时环境可能没有 DISPLAY → scrap 的 X11 后端找不到显示器
+        crate::display_env::ensure_display();
         // scrap master 的 Display::primary() 在 Windows 上是未实现的占位（恒 Err(NotFound)），
         // 必须用 all() 取第一块屏（与 rustdesk 本体一致）。
         let mut displays = scrap::Display::all().context("no display")?;

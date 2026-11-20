@@ -71,19 +71,24 @@ pub fn screen_list() -> Vec<(usize, u32, u32)> {
 
 /// 全屏帧：优先 xcap 按选定屏抓取，权限受限时回退平台 CLI。
 fn grab_full() -> Result<RgbaImage> {
+    // sidecar 拉起时环境可能没有 DISPLAY，先探测补齐（Linux）
+    crate::display_env::ensure_display();
     let sel = SCREEN_SEL.load(std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut monitors) = xcap::Monitor::all() {
         if !monitors.is_empty() {
             let idx = sel.min(monitors.len() - 1);
             match monitors.swap_remove(idx).capture_image() {
                 Ok(img) => return Ok(img),
-                Err(e) => tracing::warn!("xcap capture_image failed ({e}), fallback to cli"),
+                Err(e) => crate::display_env::warn_throttled(
+                    "xcap",
+                    &format!("capture_image failed ({e}), fallback to cli"),
+                ),
             }
         } else {
-            tracing::warn!("xcap: no monitors, fallback to cli");
+            crate::display_env::warn_throttled("xcap", "no monitors, fallback to cli");
         }
     } else {
-        tracing::warn!("xcap Monitor::all failed, fallback to cli");
+        crate::display_env::warn_throttled("xcap", "Monitor::all failed, fallback to cli");
     }
     grab_cli()
 }

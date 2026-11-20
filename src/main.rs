@@ -9,6 +9,7 @@
 //
 // 许可证：AGPL-3.0（见 LICENSE）。
 mod capture;
+mod display_env;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 mod vpx;
 mod input;
@@ -41,6 +42,9 @@ enum Cmd {
 }
 
 fn main() -> Result<()> {
+    // 插件常被 NPA 的 sidecar 拉起，环境里可能没有 DISPLAY（systemd user 会话
+    // 不导入 X11 变量）→ xcap / scrap 的 X11 后端会连不上显示器。先补上。
+    display_env::ensure_display();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

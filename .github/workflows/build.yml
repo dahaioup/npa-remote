@@ -113,6 +113,10 @@ jobs:
           grep -rlE 'HAVE_SVE2|HAVE_SVE|HAVE_SME' /tmp/libyuv \
             --include=*.cc --include=*.h --include=CMakeLists.txt | xargs -r \
             sed -i -E 's/(HAVE_SVE2|HAVE_SVE|HAVE_SME)\b/HAVE_NPA_NO_SVE/g'
+          # 再把分发层对 *_SME / *_SVE2 变体的**调用**换成通用实现（只替换调用点，
+          # 不动定义，否则会与同名通用定义冲突）。
+          grep -rlE '_SME|_SVE2' /tmp/libyuv --include=*.cc --include=*.h | xargs -r \
+            sed -i -E 's/([A-Za-z0-9_]+)_SME\(/\1(/g; s/([A-Za-z0-9_]+)_SVE2\(/\1(/g; s/\&([A-Za-z0-9_]+)_SME\b/\1/g; s/\&([A-Za-z0-9_]+)_SVE2\b/\1/g'
           for f in $(find /tmp/libyuv -name '*_sve.cc' -o -name '*_sme.cc'); do
             printf '// SVE/SME variant disabled for zig cross build\n' > "$f"
           done

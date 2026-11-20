@@ -110,11 +110,12 @@ jobs:
           sudo cp /tmp/libyuv/include/libyuv/*.h $STATIC_ROOT/include/libyuv/
       - name: Build static aom
         run: |
-          # AOM 用 Gitiles +archive 拿源码（不依赖 git/tag），v3.9.0
+          # AOM 用 GitHub 官方镜像的 tarball（Alliance-for-Open-Media/AOM 带 CMakeLists.txt；
+          # googlesource 的 +archive 对这个 tag 取不到）
           rm -rf /tmp/aom /tmp/aom.tgz
           curl -fsSL --retry 3 -o /tmp/aom.tgz \
-            "https://aomedia.googlesource.com/aom/+archive/refs/tags/v3.9.0.tar.gz"
-          mkdir -p /tmp/aom && tar -xzf /tmp/aom.tgz -C /tmp/aom
+            "https://github.com/Alliance-for-Open-Media/AOM/archive/refs/tags/v3.9.0.tar.gz"
+          mkdir -p /tmp/aom && tar -xzf /tmp/aom.tgz -C /tmp/aom --strip-components=1
           [ -f /tmp/aom/CMakeLists.txt ] || { echo "ERROR: aom 无 CMakeLists.txt"; exit 1; }
           cmake -S /tmp/aom -B /tmp/aom-build -G Ninja \
             -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \

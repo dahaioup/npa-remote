@@ -139,22 +139,19 @@ jobs:
           printf 'prefix=%s\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: libyuv\nDescription: static libyuv\nVersion: 0.0.1\nLibs: -L${libdir} -lnpa_yuv\nCflags: -I${includedir}\n' "$STATIC_ROOT" | sudo tee $STATIC_ROOT/lib/pkgconfig/libyuv.pc
           printf 'prefix=%s\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: aom\nDescription: static aom\nVersion: 3.9.0\nLibs: -L${libdir} -lnpa_aom -lm -lpthread\nCflags: -I${includedir}\n' "$STATIC_ROOT" | sudo tee $STATIC_ROOT/lib/pkgconfig/aom.pc
       - name: Build (glibc 2.28, static vpx)
-        run: cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28
-        env:
-          # webm-sys 的 libwebm C++ 代码在新 GCC 上缺 #include <cstdint>，强制注入
-          CXXFLAGS: "-include cstdint"
-          # pkg-config 只找我们编的静态库（系统里的 libvpx.so.9 / libaom.so.3 会被排除）
-          # 只用 PKG_CONFIG_PATH（不要设 PKG_CONFIG_LIBDIR：那样会把系统的
-          # dbus-1.pc / openssl.pc 一并屏蔽，libdbus-sys、openssl-sys 就找不到库了）
-          PKG_CONFIG_PATH: $STATIC_ROOT/lib/pkgconfig
-          # 交叉编译时 pkg-config crate 默认拒绝跨 host 的 .pc，必须显式放行
-          PKG_CONFIG_ALLOW_CROSS: 1
-          PKG_CONFIG_ALLOW_SYSTEM_CFLAGS: 1
-          PKG_CONFIG_ALLOW_SYSTEM_LIBS: 1
-          # openssl-sys：显式指向系统 OpenSSL（zigcc 的默认搜索路径找不到）
-          OPENSSL_DIR: /usr
-          OPENSSL_INCLUDE_DIR: /usr/include
-          OPENSSL_LIB_DIR: /usr/lib/aarch64-linux-gnu
+        # 注意：GitHub Actions 的 env: 上下文不做变量展开，$STATIC_ROOT 会原样传下去
+        # （pkg-config crate 收到字面量 '$STATIC_ROOT/lib/pkgconfig' 就找不到 .pc）。
+        # 所以这里必须用 shell 的 export。
+        run: |
+          export CXXFLAGS="-include cstdint"
+          export PKG_CONFIG_PATH="$STATIC_ROOT/lib/pkgconfig"
+          export PKG_CONFIG_ALLOW_CROSS=1
+          export PKG_CONFIG_ALLOW_SYSTEM_LIBS=1
+          export PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1
+          export OPENSSL_DIR=/usr
+          export OPENSSL_INCLUDE_DIR=/usr/include
+          export OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu
+          cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28
       - name: Verify static linkage
         run: |
           BIN=target/aarch64-unknown-linux-gnu/release/npa-remote

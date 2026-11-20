@@ -113,7 +113,7 @@ jobs:
           # AOM 用 Gitiles +archive 拿源码（不依赖 git/tag），v3.9.0
           rm -rf /tmp/aom /tmp/aom.tgz
           curl -fsSL --retry 3 -o /tmp/aom.tgz \
-            "https://aomedia.googlesource.com/aom/+archive/v3.9.0.tar.gz"
+            "https://aomedia.googlesource.com/aom/+archive/refs/tags/v3.9.0.tar.gz"
           mkdir -p /tmp/aom && tar -xzf /tmp/aom.tgz -C /tmp/aom
           [ -f /tmp/aom/CMakeLists.txt ] || { echo "ERROR: aom 无 CMakeLists.txt"; exit 1; }
           cmake -S /tmp/aom -B /tmp/aom-build -G Ninja \

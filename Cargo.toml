@@ -33,6 +33,10 @@ base = { path = "third_party/rustdesk/libs/base" }
 # Linux：pkg-config 发现系统 libvpx/libyuv/libaom（apt 装的 -dev 包）
 scrap = { path = "third_party/rustdesk/libs/scrap", features = ["linux-pkg-config"] }
 base = { path = "third_party/rustdesk/libs/base" }
+# xcb 用 dl 模式：运行时 dlopen 系统 libxcb.so.1。
+# 静态链接 libxcb.a 时 xcb_connect 在目标机上连不上 X（UOS 39 实测 no monitors），
+# 改成 dlopen 后由目标机系统库提供 libxcb，跨发行版都能用。
+xcb = { version = "1.7", features = ["dl"] }
 
 # build.rs：macOS 编译 BackingScaleFactor 最小实现（scrap Display::scale 需要）
 [build-dependencies]

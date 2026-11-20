@@ -6,9 +6,16 @@ on:
   workflow_dispatch:
 
 jobs:
-  linux-uos:
-    # 老 glibc 发行版（UOS 20 = glibc 2.28）：原生 arm64 runner + zig 仅用来降 glibc 目标
+  linux-uos-static:
+    # UOS 20（glibc 2.28 / arm64）构件：libvpx + libyuv + aom 全部**静态链接**。
+    # 目标机（39）只有 libvpx.so.5 / libaom.so.0（SONAME 与符号都和 Ubuntu 24 的
+    # libvpx.so.9 对不上），动态链的构件在它上面根本起不来——静态自包含才可用。
+    # 做法参考 RustDesk 的 linux 构建：vcpkg 静态包；这里用 zig cc 直接从源码
+    # 编三套库（vcpkg 在 arm64 上编 libvpx 太慢），产物同样零 .so 依赖。
     runs-on: ubuntu-24.04-arm
+    env:
+      ZIG_TARGET: aarch64-linux-gnu.2.28
+      STATIC_ROOT: /opt/npa-static
     steps:
       - uses: actions/checkout@v4
       - name: Checkout RustDesk libs (AGPL upstream)
@@ -22,56 +29,113 @@ jobs:
       - name: Patch scrap for rust 1.100
         run: |
           sed -i 's/breakdown_signal_handler as _/breakdown_signal_handler as *const () as _/' third_party/rustdesk/libs/base/src/platform/mod.rs
-      - name: Install zig
+      - name: Install toolchain
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build llvm pkg-config libclang-dev \
+            libdbus-1-dev libx11-dev libxcb1-dev libxdo-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libssl-dev libxcb-shm0-dev libxcb-randr0-dev
           curl -fsSL -o /tmp/zig.tar.xz https://ziglang.org/download/0.13.0/zig-linux-aarch64-0.13.0.tar.xz
           mkdir -p /opt/zig && tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
           echo /opt/zig >> $GITHUB_PATH
-      - name: Install cargo-zigbuild
-        run: cargo install cargo-zigbuild --locked
-      - uses: dtolnay/rust-toolchain@1.99.1
-        with:
-          targets: aarch64-unknown-linux-gnu
-      - name: Install link deps
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libx11-dev libxcb1-dev libxdo-dev libxkbcommon-dev libxkbcommon-x11-dev
-      - name: Install vpx deps (linux-uos)
-        run: |
-          sudo apt-get install -y libvpx-dev libyuv-dev libaom-dev libxcb-shm0-dev libxcb-randr0-dev libssl-dev
+          cargo install cargo-zigbuild --locked
+          # zig cc 包装：CMake 里直接指定编译器，自动带上目标三元组与 glibc 版本
+          printf '#!/bin/sh\nexec /opt/zig/zig cc --target=%s "$@"\n' "$ZIG_TARGET" | sudo tee /usr/local/bin/zig-cc > /dev/null
+          printf '#!/bin/sh\nexec /opt/zig/zig c++ --target=%s "$@"\n' "$ZIG_TARGET" | sudo tee /usr/local/bin/zig-c++ > /dev/null
+          sudo chmod +x /usr/local/bin/zig-cc /usr/local/bin/zig-c++
           sudo mkdir -p /usr/include/openssl
           sudo ln -sf /usr/include/aarch64-linux-gnu/openssl/opensslconf.h /usr/include/openssl/opensslconf.h
           sudo ln -sf /usr/include/aarch64-linux-gnu/openssl/configuration.h /usr/include/openssl/configuration.h 2>/dev/null || true
-          # Ubuntu 的 libyuv-dev 不提供 .pc 文件，手动写
-          sudo mkdir -p /usr/lib/aarch64-linux-gnu/pkgconfig
-          echo 'prefix=/usr
-          exec_prefix=${prefix}
-          libdir=${exec_prefix}/lib/aarch64-linux-gnu
-          includedir=${prefix}/include
-          Name: libyuv
-          Description: YUV conversion library
-          Version: 0.0.1
-          Libs: -L${libdir} -lyuv
-          Cflags: -I${includedir}' | sudo tee /usr/lib/aarch64-linux-gnu/pkgconfig/libyuv.pc
-      - name: Build (glibc 2.28)
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - name: Build static libvpx
+        run: |
+          curl -fsSL -o /tmp/libvpx.tar.gz https://github.com/webmproject/libvpx/archive/refs/tags/v1.15.0.tar.gz
+          tar -xzf /tmp/libvpx.tar.gz -C /tmp
+          cmake -S /tmp/libvpx-1.15.0 -B /tmp/libvpx-build -G Ninja \
+            -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
+            -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \
+            -DCMAKE_AR=llvm-ar -DCMAKE_RANLIB=llvm-ranlib \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_SHARED=0 -DENABLE_STATIC=1 \
+            -DENABLE_VP8=1 -DENABLE_VP9=0 -DENABLE_AV1=0 \
+            -DENABLE_EXAMPLES=0 -DENABLE_TESTS=0 -DENABLE_TOOLS=0 -DENABLE_DOCS=0 \
+            -DCONFIG_VP8_HIGHBITDEPTH=1 \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+          cmake --build /tmp/libvpx-build -j4 --target libvpx
+          sudo mkdir -p $STATIC_ROOT/lib $STATIC_ROOT/include
+          sudo cp /tmp/libvpx-build/libvpx.a $STATIC_ROOT/lib/libnpa_vpx.a
+          sudo cp -r /tmp/libvpx-1.15.0/vpx $STATIC_ROOT/include/
+      - name: Build static libyuv
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/chromium/src/third_party/libyuv /tmp/libyuv
+          cmake -S /tmp/libyuv -B /tmp/libyuv-build -G Ninja \
+            -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
+            -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \
+            -DCMAKE_AR=llvm-ar -DCMAKE_RANLIB=llvm-ranlib \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
+          cmake --build /tmp/libyuv-build -j4
+          sudo cp /tmp/libyuv-build/libyuv.a $STATIC_ROOT/lib/libnpa_yuv.a
+          sudo cp -r /tmp/libyuv/include/libyuv $STATIC_ROOT/include/
+      - name: Build static aom
+        run: |
+          git clone --depth 1 --branch v3.9.0 https://aomedia.googlesource.com/aom /tmp/aom
+          cmake -S /tmp/aom -B /tmp/aom-build -G Ninja \
+            -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
+            -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \
+            -DCMAKE_AR=llvm-ar -DCMAKE_RANLIB=llvm-ranlib \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=0 \
+            -DENABLE_TESTS=0 -DENABLE_EXAMPLES=0 -DENABLE_TOOLS=0 -DENABLE_DOCS=0 \
+            -DCONFIG_AV1_ENCODER=0 -DCONFIG_AV1_DECODER=1
+          cmake --build /tmp/aom-build -j4 --target aom
+          sudo cp /tmp/aom-build/libaom.a $STATIC_ROOT/lib/libnpa_aom.a
+          sudo cp -r /tmp/aom-build/aom $STATIC_ROOT/include/ 2>/dev/null || \
+            sudo cp -r /tmp/aom/aom $STATIC_ROOT/include/
+      - name: Write pkg-config (static only)
+        run: |
+          sudo mkdir -p $STATIC_ROOT/lib/pkgconfig
+          # 库名带 npa_ 前缀：绝无可能链到系统里的 libvpx.so / libaom.so
+          # （runner 上也没装 libvpx-dev/libaom-dev，链接器只会选 .a）
+          printf 'prefix=%s\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: vpx\nDescription: static libvpx\nVersion: 1.15.0\nLibs: -L${libdir} -lnpa_vpx -lm -lpthread\nCflags: -I${includedir}\n' "$STATIC_ROOT" | sudo tee $STATIC_ROOT/lib/pkgconfig/vpx.pc
+          printf 'prefix=%s\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: libyuv\nDescription: static libyuv\nVersion: 0.0.1\nLibs: -L${libdir} -lnpa_yuv\nCflags: -I${includedir}\n' "$STATIC_ROOT" | sudo tee $STATIC_ROOT/lib/pkgconfig/libyuv.pc
+          printf 'prefix=%s\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: aom\nDescription: static aom\nVersion: 3.9.0\nLibs: -L${libdir} -lnpa_aom -lm -lpthread\nCflags: -I${includedir}\n' "$STATIC_ROOT" | sudo tee $STATIC_ROOT/lib/pkgconfig/aom.pc
+      - name: Build (glibc 2.28, static vpx)
         run: cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28
         env:
           # webm-sys 的 libwebm C++ 代码在新 GCC 上缺 #include <cstdint>，强制注入
           CXXFLAGS: "-include cstdint"
+          # pkg-config 只找我们编的静态库（系统里的 libvpx.so.9 / libaom.so.3 会被排除）
+          PKG_CONFIG_PATH: $STATIC_ROOT/lib/pkgconfig
+          PKG_CONFIG_ALLOW_SYSTEM_CFLAGS: 1
+          PKG_CONFIG_ALLOW_SYSTEM_LIBS: 1
           # openssl-sys：显式指向系统 OpenSSL（zigcc 的默认搜索路径找不到）
           OPENSSL_DIR: /usr
           OPENSSL_INCLUDE_DIR: /usr/include
           OPENSSL_LIB_DIR: /usr/lib/aarch64-linux-gnu
+      - name: Verify static linkage
+        run: |
+          BIN=target/aarch64-unknown-linux-gnu/release/npa-remote
+          echo "--- NEEDED ---"
+          readelf -d "$BIN" | grep NEEDED || true
+          if readelf -d "$BIN" | grep -Eq 'libvpx|libyuv|libaom'; then
+            echo "FAIL: 仍动态依赖 vpx/yuv/aom"
+            exit 1
+          fi
+          echo "OK: 无 vpx/yuv/aom 动态依赖"
+          file "$BIN"
       - name: Pack (UPX)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl
           BIN=target/aarch64-unknown-linux-gnu/release/npa-remote
           BEFORE=$(wc -c < "$BIN")
-          upx -9 "$BIN"
+          upx -9 "$BIN" || true
           echo "pack: $BEFORE -> $(wc -c < "$BIN")"
           "$BIN" --help > /dev/null
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: npa-remote-linux-arm64-uos
+          name: npa-remote-linux-arm64-uos-static
           path: target/aarch64-unknown-linux-gnu/release/npa-remote
 
   build:

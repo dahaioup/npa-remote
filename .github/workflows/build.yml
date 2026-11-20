@@ -40,8 +40,30 @@ jobs:
           echo /opt/zig >> $GITHUB_PATH
           cargo install cargo-zigbuild --locked
           # zig cc 包装：CMake 里直接指定编译器，自动带上目标三元组与 glibc 版本
-          printf '#!/bin/sh\nexec /opt/zig/zig cc --target=%s "$@"\n' "$ZIG_TARGET" | sudo tee /usr/local/bin/zig-cc > /dev/null
-          printf '#!/bin/sh\nexec /opt/zig/zig c++ --target=%s "$@"\n' "$ZIG_TARGET" | sudo tee /usr/local/bin/zig-c++ > /dev/null
+          # zig 0.13 不认 armv8.2（libyuv 的 CMake 会自己探测并传 -march=armv8.2），
+          # 包装里把它换成 generic，避免 "unknown CPU: 'armv8.2'"。
+          cat <<'EOF' | sudo tee /usr/local/bin/zig-cc > /dev/null
+#!/bin/sh
+for a in "$@"; do
+  case "$a" in
+    -march=armv8.2*|-mcpu=armv8.2*) a="-mcpu=generic" ;;
+  esac
+  set -- "$@" "$a"
+  shift
+done
+exec /opt/zig/zig cc --target=aarch64-linux-gnu.2.28 "$@"
+EOF
+          cat <<'EOF' | sudo tee /usr/local/bin/zig-c++ > /dev/null
+#!/bin/sh
+for a in "$@"; do
+  case "$a" in
+    -march=armv8.2*|-mcpu=armv8.2*) a="-mcpu=generic" ;;
+  esac
+  set -- "$@" "$a"
+  shift
+done
+exec /opt/zig/zig c++ --target=aarch64-linux-gnu.2.28 "$@"
+EOF
           sudo chmod +x /usr/local/bin/zig-cc /usr/local/bin/zig-c++
           sudo mkdir -p /usr/include/openssl
           sudo ln -sf /usr/include/aarch64-linux-gnu/openssl/opensslconf.h /usr/include/openssl/opensslconf.h

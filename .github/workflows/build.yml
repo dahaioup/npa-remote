@@ -144,8 +144,9 @@ jobs:
           # webm-sys 的 libwebm C++ 代码在新 GCC 上缺 #include <cstdint>，强制注入
           CXXFLAGS: "-include cstdint"
           # pkg-config 只找我们编的静态库（系统里的 libvpx.so.9 / libaom.so.3 会被排除）
+          # 只用 PKG_CONFIG_PATH（不要设 PKG_CONFIG_LIBDIR：那样会把系统的
+          # dbus-1.pc / openssl.pc 一并屏蔽，libdbus-sys、openssl-sys 就找不到库了）
           PKG_CONFIG_PATH: $STATIC_ROOT/lib/pkgconfig
-          PKG_CONFIG_LIBDIR: $STATIC_ROOT/lib/pkgconfig
           # 交叉编译时 pkg-config crate 默认拒绝跨 host 的 .pc，必须显式放行
           PKG_CONFIG_ALLOW_CROSS: 1
           PKG_CONFIG_ALLOW_SYSTEM_CFLAGS: 1

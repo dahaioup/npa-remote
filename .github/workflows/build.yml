@@ -103,11 +103,15 @@ jobs:
           [ -s /tmp/libyuv.tgz ] || { echo "ERROR: libyuv 下载失败"; exit 1; }
           mkdir -p /tmp/libyuv && tar -xzf /tmp/libyuv.tgz -C /tmp/libyuv --strip-components=1
           [ -f /tmp/libyuv/CMakeLists.txt ] || { echo "ERROR: libyuv 无 CMakeLists.txt"; exit 1; }
+          # zig 不支持 SVE2（-march=armv8.5-a+i8mm+sve2），libyuv 的 yuv_sve 目标会编译失败：
+          # 统一改名禁用（同时加 LIBYUV_DISABLE_SVE，选项名若存在则一并生效）。
+          grep -rl 'yuv_sve' /tmp/libyuv --include=CMakeLists.txt | xargs -r sed -i 's/yuv_sve/yuv_sve_off/g'
           cmake -S /tmp/libyuv -B /tmp/libyuv-build -G Ninja \
             -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
             -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \
             -DCMAKE_AR=llvm-ar -DCMAKE_RANLIB=llvm-ranlib \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DLIBYUV_DISABLE_SVE=ON -DLIBYUV_DISABLE_SME=ON \
             -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
             -DCMAKE_CROSSCOMPILING=TRUE \
             -DCMAKE_C_SIZEOF_VOID_P=8 -DCMAKE_CXX_SIZEOF_VOID_P=8 \

@@ -4,7 +4,7 @@ TARGET="${ZIG_TARGET:-aarch64-linux-gnu.2.28}"
 out=""
 for a in "$@"; do
   case "$a" in
-    -march=armv8.2*|-mcpu=armv8.2*) a="-mcpu=generic" ;;
+    -march=armv8*|-mcpu=armv8*|-march=armv9*|-mcpu=armv9*) a="-mcpu=generic" ;;
   esac
   out="$out \"$a\""
 done

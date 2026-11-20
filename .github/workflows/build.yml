@@ -95,14 +95,11 @@ jobs:
       - name: Build static libyuv
         run: |
           rm -rf /tmp/libyuv /tmp/libyuv.tgz
-          for U in \
-            "https://chromium.googlesource.com/chromium/src/third_party/libyuv/+archive/refs/heads/main.tar.gz" \
-            "https://chromium.googlesource.com/chromium/src/third_party/libyuv/+archive/HEAD.tar.gz"; do
-            echo "try $U"
-            if curl -fsSL --retry 2 -o /tmp/libyuv.tgz "$U"; then break; fi
-          done
+          # chromium 的 googlesource 子目录 +archive 取不到，改用社区镜像 lemenkov/libyuv
+          curl -fsSL --retry 3 -o /tmp/libyuv.tgz \
+            "https://github.com/lemenkov/libyuv/archive/refs/heads/main.tar.gz"
           [ -s /tmp/libyuv.tgz ] || { echo "ERROR: libyuv 下载失败"; exit 1; }
-          mkdir -p /tmp/libyuv && tar -xzf /tmp/libyuv.tgz -C /tmp/libyuv
+          mkdir -p /tmp/libyuv && tar -xzf /tmp/libyuv.tgz -C /tmp/libyuv --strip-components=1
           [ -f /tmp/libyuv/CMakeLists.txt ] || { echo "ERROR: libyuv 无 CMakeLists.txt"; exit 1; }
           cmake -S /tmp/libyuv -B /tmp/libyuv-build -G Ninja \
             -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
@@ -113,33 +110,14 @@ jobs:
           sudo cp /tmp/libyuv-build/libyuv.a $STATIC_ROOT/lib/libnpa_yuv.a
           sudo mkdir -p $STATIC_ROOT/include/libyuv
           sudo cp /tmp/libyuv/include/libyuv/*.h $STATIC_ROOT/include/libyuv/
-      - name: Build static aom
+      - name: Provide static aom headers (scrap 只在 AV1 路径用 aom)
         run: |
-          # AOM 源码两个来源依次试（GitHub 镜像路径不可靠，googlesource 的 tag archive 也 404）：
-          #   1) chromium 里的 third_party/aom 快照（与 libyuv 同款 URL 形式，已验证可下）
-          #   2) aomedia googlesource 的 master
-          rm -rf /tmp/aom /tmp/aom.tgz
-          for U in \
-            "https://chromium.googlesource.com/chromium/src/third_party/aom/+archive/refs/heads/main.tar.gz" \
-            "https://chromium.googlesource.com/chromium/src/third_party/aom/+archive/HEAD.tar.gz" \
-            "https://aomedia.googlesource.com/aom/+archive/master.tar.gz"; do
-            echo "try $U"
-            if curl -fsSL --retry 2 -o /tmp/aom.tgz "$U"; then break; fi
-          done
-          [ -s /tmp/aom.tgz ] || { echo "ERROR: aom 下载失败"; exit 1; }
-          mkdir -p /tmp/aom && tar -xzf /tmp/aom.tgz -C /tmp/aom --strip-components=1
-          [ -f /tmp/aom/CMakeLists.txt ] || { echo "ERROR: aom 无 CMakeLists.txt"; ls /tmp/aom | head; exit 1; }
-          cmake -S /tmp/aom -B /tmp/aom-build -G Ninja \
-            -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
-            -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \
-            -DCMAKE_AR=llvm-ar -DCMAKE_RANLIB=llvm-ranlib \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=0 \
-            -DENABLE_TESTS=0 -DENABLE_EXAMPLES=0 -DENABLE_TOOLS=0 -DENABLE_DOCS=0 \
-            -DCONFIG_AV1_ENCODER=0 -DCONFIG_AV1_DECODER=1
-          cmake --build /tmp/aom-build -j4 --target aom
-          sudo cp /tmp/aom-build/libaom.a $STATIC_ROOT/lib/libnpa_aom.a
+          # scrap 的 build.rs 无条件要 aom 的头文件（bindgen）与链接参数，
+          # 但我们只走 VP8 路径 → 头文件用发行版的（架构无关），链接给一个空 archive。
+          sudo apt-get install -y libaom-dev
           sudo mkdir -p $STATIC_ROOT/include/aom
-          sudo cp /tmp/aom/aom/*.h $STATIC_ROOT/include/aom/
+          sudo cp /usr/include/aom/*.h $STATIC_ROOT/include/aom/
+          llvm-ar crs $STATIC_ROOT/lib/libnpa_aom.a
       - name: Write pkg-config (static only)
         run: |
           sudo mkdir -p $STATIC_ROOT/lib/pkgconfig

@@ -29,6 +29,8 @@ jobs:
       - name: Patch scrap for rust 1.100
         run: |
           sed -i 's/breakdown_signal_handler as _/breakdown_signal_handler as *const () as _/' third_party/rustdesk/libs/base/src/platform/mod.rs
+      - name: Patch scrap for static link (cross build)
+        run: python3 scripts/patch-scrap-static.py
       - name: Install toolchain
         run: |
           sudo apt-get update -qq
@@ -133,14 +135,16 @@ jobs:
       - name: Write pkg-config (static only)
         run: |
           sudo mkdir -p $STATIC_ROOT/lib/pkgconfig
-          # Libs 必须写**绝对路径的静态库文件**，不能用 -lnpa_vpx：
-          # rustc 的链接命令里 pkg-config 的 -l 参数落在 -Wl,-Bdynamic 之后，
-          # lld 只会去找同名 .so（找不到就报 "unable to find dynamic system library"）。
+          # Libs 留空：交叉编译时 pkg-config crate 只会 emit 动态的 -lnpa_vpx，
+          # 而 rustc 把这些 -l 放在 -Wl,-Bdynamic 之后，lld 就只会去找同名 .so
+          # （报 "unable to find dynamic system library"）。
+          # 真正的静态链接由下面 patch 过的 scrap build.rs 用
+          # cargo:rustc-link-lib=static=npa_vpx 完成。
           # 库名带 npa_ 前缀：绝无可能链到系统里的 libvpx.so / libaom.so
           # （runner 上也没装 libvpx-dev/libaom-dev，链接器只会选 .a）
-          printf 'prefix=%s\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: vpx\nDescription: static libvpx\nVersion: 1.15.0\nLibs: ${libdir}/libnpa_vpx.a -lm -lpthread\nCflags: -I${includedir}\n' "$STATIC_ROOT" | sudo tee $STATIC_ROOT/lib/pkgconfig/vpx.pc
-          printf 'prefix=%s\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: libyuv\nDescription: static libyuv\nVersion: 0.0.1\nLibs: ${libdir}/libnpa_yuv.a\nCflags: -I${includedir}\n' "$STATIC_ROOT" | sudo tee $STATIC_ROOT/lib/pkgconfig/libyuv.pc
-          printf 'prefix=%s\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: aom\nDescription: static aom\nVersion: 3.9.0\nLibs: ${libdir}/libnpa_aom.a -lm -lpthread\nCflags: -I${includedir}\n' "$STATIC_ROOT" | sudo tee $STATIC_ROOT/lib/pkgconfig/aom.pc
+          printf 'prefix=%s\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: vpx\nDescription: static libvpx\nVersion: 1.15.0\nLibs:\nCflags: -I${includedir}\n' "$STATIC_ROOT" | sudo tee $STATIC_ROOT/lib/pkgconfig/vpx.pc
+          printf 'prefix=%s\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: libyuv\nDescription: static libyuv\nVersion: 0.0.1\nLibs:\nCflags: -I${includedir}\n' "$STATIC_ROOT" | sudo tee $STATIC_ROOT/lib/pkgconfig/libyuv.pc
+          printf 'prefix=%s\nlibdir=${prefix}/lib\nincludedir=${prefix}/include\nName: aom\nDescription: static aom\nVersion: 3.9.0\nLibs:\nCflags: -I${includedir}\n' "$STATIC_ROOT" | sudo tee $STATIC_ROOT/lib/pkgconfig/aom.pc
       - name: Build (glibc 2.28, static vpx)
         # 注意：GitHub Actions 的 env: 上下文不做变量展开，$STATIC_ROOT 会原样传下去
         # （pkg-config crate 收到字面量 '$STATIC_ROOT/lib/pkgconfig' 就找不到 .pc）。
@@ -154,6 +158,7 @@ jobs:
           export OPENSSL_DIR=/usr
           export OPENSSL_INCLUDE_DIR=/usr/include
           export OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu
+          export NPA_STATIC_LIB="$STATIC_ROOT/lib"
           cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28
       - name: Verify static linkage
         run: |

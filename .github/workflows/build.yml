@@ -51,9 +51,20 @@ jobs:
           targets: aarch64-unknown-linux-gnu
       - name: Build static libvpx
         run: |
-          curl -fsSL -o /tmp/libvpx.tar.gz https://github.com/webmproject/libvpx/archive/refs/tags/v1.15.0.tar.gz
-          tar -xzf /tmp/libvpx.tar.gz -C /tmp
-          cmake -S /tmp/libvpx-1.15.0 -B /tmp/libvpx-build -G Ninja \
+          # 多个源兜底：canonical(Gitiles) 一定有 CMakeLists.txt；GitHub 镜像的
+          # 某些 tag 快照会缺 CMakeLists.txt（只有旧 configure/make 构建），
+          # 所以逐个试，取第一个带 CMakeLists.txt 的。
+          rm -rf /tmp/libvpx
+          if git clone --depth 1 --branch v1.15.0 https://chromium.googlesource.com/webm/libvpx /tmp/libvpx 2>/dev/null \
+             && [ -f /tmp/libvpx/CMakeLists.txt ]; then
+            echo "libvpx: chromium canonical v1.15.0"
+          else
+            rm -rf /tmp/libvpx
+            git clone --depth 1 https://github.com/webmproject/libvpx /tmp/libvpx
+            [ -f /tmp/libvpx/CMakeLists.txt ] || { echo "ERROR: libvpx 无 CMakeLists.txt"; exit 1; }
+            echo "libvpx: github master"
+          fi
+          cmake -S /tmp/libvpx -B /tmp/libvpx-build -G Ninja \
             -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
             -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \
             -DCMAKE_AR=llvm-ar -DCMAKE_RANLIB=llvm-ranlib \
@@ -66,10 +77,19 @@ jobs:
           cmake --build /tmp/libvpx-build -j4 --target libvpx
           sudo mkdir -p $STATIC_ROOT/lib $STATIC_ROOT/include
           sudo cp /tmp/libvpx-build/libvpx.a $STATIC_ROOT/lib/libnpa_vpx.a
-          sudo cp -r /tmp/libvpx-1.15.0/vpx $STATIC_ROOT/include/
+          sudo cp -r /tmp/libvpx/vpx $STATIC_ROOT/include/
       - name: Build static libyuv
         run: |
-          git clone --depth 1 https://chromium.googlesource.com/chromium/src/third_party/libyuv /tmp/libyuv
+          rm -rf /tmp/libyuv
+          if git clone --depth 1 https://chromium.googlesource.com/chromium/src/third_party/libyuv /tmp/libyuv 2>/dev/null \
+             && [ -f /tmp/libyuv/CMakeLists.txt ]; then
+            echo "libyuv: chromium canonical"
+          else
+            rm -rf /tmp/libyuv
+            git clone --depth 1 https://github.com/lemenkov/libyuv /tmp/libyuv
+            [ -f /tmp/libyuv/CMakeLists.txt ] || { echo "ERROR: libyuv 无 CMakeLists.txt"; exit 1; }
+            echo "libyuv: github mirror"
+          fi
           cmake -S /tmp/libyuv -B /tmp/libyuv-build -G Ninja \
             -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
             -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \
@@ -77,10 +97,20 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
           cmake --build /tmp/libyuv-build -j4
           sudo cp /tmp/libyuv-build/libyuv.a $STATIC_ROOT/lib/libnpa_yuv.a
-          sudo cp -r /tmp/libyuv/include/libyuv $STATIC_ROOT/include/
+          sudo mkdir -p $STATIC_ROOT/include/libyuv
+          sudo cp /tmp/libyuv/include/libyuv/*.h $STATIC_ROOT/include/libyuv/
       - name: Build static aom
         run: |
-          git clone --depth 1 --branch v3.9.0 https://aomedia.googlesource.com/aom /tmp/aom
+          rm -rf /tmp/aom
+          if git clone --depth 1 --branch v3.9.0 https://aomedia.googlesource.com/aom /tmp/aom 2>/dev/null \
+             && [ -f /tmp/aom/CMakeLists.txt ]; then
+            echo "aom: aomedia canonical v3.9.0"
+          else
+            rm -rf /tmp/aom
+            git clone --depth 1 --branch v3.9.0 https://github.com/Alliance-for-Open-Media/AOM /tmp/aom
+            [ -f /tmp/aom/CMakeLists.txt ] || { echo "ERROR: aom 无 CMakeLists.txt"; exit 1; }
+            echo "aom: github mirror v3.9.0"
+          fi
           cmake -S /tmp/aom -B /tmp/aom-build -G Ninja \
             -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
             -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \
@@ -90,8 +120,8 @@ jobs:
             -DCONFIG_AV1_ENCODER=0 -DCONFIG_AV1_DECODER=1
           cmake --build /tmp/aom-build -j4 --target aom
           sudo cp /tmp/aom-build/libaom.a $STATIC_ROOT/lib/libnpa_aom.a
-          sudo cp -r /tmp/aom-build/aom $STATIC_ROOT/include/ 2>/dev/null || \
-            sudo cp -r /tmp/aom/aom $STATIC_ROOT/include/
+          sudo mkdir -p $STATIC_ROOT/include/aom
+          sudo cp /tmp/aom/aom/*.h $STATIC_ROOT/include/aom/
       - name: Write pkg-config (static only)
         run: |
           sudo mkdir -p $STATIC_ROOT/lib/pkgconfig

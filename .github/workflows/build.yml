@@ -78,13 +78,11 @@ jobs:
           ./configure --help 2>/dev/null | grep -iE 'vp8|vp9|bitdepth' | head -20 || true
           # libvpx 的 --target 用它自己 toolchain.sh 里定义的名字
           # （arm64-linux-gcc / aarch64-linux-gcc … 随版本增减），不是 gcc 三元组。
-          # 直接从源码里抓一个 aarch64/arm64 的 toolchain 名，避免再猜。
-          VNX_TARGET=$(grep -ohE '[a-z0-9_-]+-linux-(gcc|gnu)' \
-            build/make/toolchain.sh build/make/configure.sh 2>/dev/null \
-            | grep -E '^(aarch64|arm64)' | head -1)
+          # 在整个 build/ 目录里找，探测不到就退回 libvpx 传统名 arm64-linux-gcc。
+          VNX_TARGET=$(grep -rhoE '(aarch64|arm64)-linux-(gcc|gnu)' build/ 2>/dev/null | sort -u | head -1)
+          [ -n "$VNX_TARGET" ] || VNX_TARGET=arm64-linux-gcc
           echo "libvpx target=$VNX_TARGET"
-          grep -A3 -E '^\s*(aarch64|arm64)-linux-(gcc|gnu)\)' build/make/toolchain.sh 2>/dev/null | head -12 || true
-          [ -n "$VNX_TARGET" ] || { echo "ERROR: libvpx 没找到 aarch64 toolchain"; exit 1; }
+          ls build/make/ 2>/dev/null | head -20 || true
           ./configure --target="$VNX_TARGET" \
             --disable-examples --disable-tools --disable-unit-tests --disable-docs \
             --disable-vp9 --enable-vp8 \

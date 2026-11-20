@@ -49,35 +49,36 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: aarch64-unknown-linux-gnu
-      - name: Build static libvpx
+      - name: Build static libvpx (make)
         run: |
-          # libvpx 的 GitHub 镜像(webmproject/libvpx)只有旧 configure 构建、没有
-          # CMakeLists.txt；canonical 在 chromium.googlesource.com。用 Gitiles 的
-          # +archive 拿纯 HTTP 源码包（不依赖 git 协议/tag 名），HEAD 一定有 CMake。
+          # libvpx 从 2021 起主构建系统是 **make**（仓库里没有 CMakeLists.txt，
+          # RustDesk/vcpkg 走的也是 configure+make）。用 zig cc 做交叉编译器，
+          # 通过 ${target}-gcc 形式的 wrapper 满足 libvpx configure 的要求。
           rm -rf /tmp/libvpx /tmp/libvpx.tgz
           curl -fsSL --retry 3 -o /tmp/libvpx.tgz \
             "https://chromium.googlesource.com/webm/libvpx/+archive/HEAD.tar.gz"
           mkdir -p /tmp/libvpx && tar -xzf /tmp/libvpx.tgz -C /tmp/libvpx
-          [ -f /tmp/libvpx/CMakeLists.txt ] || { echo "ERROR: libvpx 无 CMakeLists.txt"; exit 1; }
-          cmake -S /tmp/libvpx -B /tmp/libvpx-build -G Ninja \
-            -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
-            -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \
-            -DCMAKE_AR=llvm-ar -DCMAKE_RANLIB=llvm-ranlib \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DENABLE_SHARED=0 -DENABLE_STATIC=1 \
-            -DENABLE_VP8=1 -DENABLE_VP9=0 -DENABLE_AV1=0 \
-            -DENABLE_EXAMPLES=0 -DENABLE_TESTS=0 -DENABLE_TOOLS=0 -DENABLE_DOCS=0 \
-            -DCONFIG_VP8_HIGHBITDEPTH=1 \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-          cmake --build /tmp/libvpx-build -j4 --target libvpx
+          [ -x /tmp/libvpx/configure ] || { echo "ERROR: libvpx 源码异常（无 configure）"; exit 1; }
+          for t in gcc g++ ld; do
+            printf '#!/bin/sh\nexec /opt/zig/zig %s --target=%s "$@"\n' "$t" "$ZIG_TARGET" \
+              | sudo tee /usr/local/bin/aarch64-linux-gnu-$t > /dev/null
+            sudo chmod +x /usr/local/bin/aarch64-linux-gnu-$t
+          done
+          for t in ar ranlib nm strip; do
+            printf '#!/bin/sh\nexec llvm-%s "$@"\n' "$t" \
+              | sudo tee /usr/local/bin/aarch64-linux-gnu-$t > /dev/null
+            sudo chmod +x /usr/local/bin/aarch64-linux-gnu-$t
+          done
+          cd /tmp/libvpx
+          ./configure --target=aarch64-linux-gnu \
+            --disable-examples --disable-tools --disable-unit-tests --disable-docs \
+            --disable-vp9 --disable-av1 --enable-vp8 --enable-vp8-highbitdepth \
+            --enable-static --disable-shared --enable-pic
+          make -j4
           sudo mkdir -p $STATIC_ROOT/lib $STATIC_ROOT/include
-          sudo cp /tmp/libvpx-build/libvpx.a $STATIC_ROOT/lib/libnpa_vpx.a
-          # 头文件布局：新版在 include/vpx/，旧版在根 vpx/，两种都兼容
-          if [ -d /tmp/libvpx/include/vpx ]; then
-            sudo cp -r /tmp/libvpx/include/vpx $STATIC_ROOT/include/
-          else
-            sudo cp -r /tmp/libvpx/vpx $STATIC_ROOT/include/
-          fi
+          sudo cp libvpx.a $STATIC_ROOT/lib/libnpa_vpx.a
+          sudo mkdir -p $STATIC_ROOT/include/vpx
+          sudo cp vpx/*.h $STATIC_ROOT/include/vpx/
       - name: Build static libyuv
         run: |
           rm -rf /tmp/libyuv /tmp/libyuv.tgz
@@ -96,9 +97,11 @@ jobs:
           sudo cp /tmp/libyuv/include/libyuv/*.h $STATIC_ROOT/include/libyuv/
       - name: Build static aom
         run: |
-          # AOM 的 GitHub 官方镜像(Alliance-for-Open-Media/AOM)活跃且带 CMake
-          rm -rf /tmp/aom
-          git clone --depth 1 --branch v3.9.0 https://github.com/Alliance-for-Open-Media/AOM /tmp/aom
+          # AOM 用 Gitiles +archive 拿源码（不依赖 git/tag），v3.9.0
+          rm -rf /tmp/aom /tmp/aom.tgz
+          curl -fsSL --retry 3 -o /tmp/aom.tgz \
+            "https://aomedia.googlesource.com/aom/+archive/v3.9.0.tar.gz"
+          mkdir -p /tmp/aom && tar -xzf /tmp/aom.tgz -C /tmp/aom
           [ -f /tmp/aom/CMakeLists.txt ] || { echo "ERROR: aom 无 CMakeLists.txt"; exit 1; }
           cmake -S /tmp/aom -B /tmp/aom-build -G Ninja \
             -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \

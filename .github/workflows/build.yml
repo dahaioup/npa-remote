@@ -103,9 +103,13 @@ jobs:
           [ -s /tmp/libyuv.tgz ] || { echo "ERROR: libyuv 下载失败"; exit 1; }
           mkdir -p /tmp/libyuv && tar -xzf /tmp/libyuv.tgz -C /tmp/libyuv --strip-components=1
           [ -f /tmp/libyuv/CMakeLists.txt ] || { echo "ERROR: libyuv 无 CMakeLists.txt"; exit 1; }
-          # zig 不支持 SVE2（-march=armv8.5-a+i8mm+sve2），libyuv 的 yuv_sve 目标会编译失败：
-          # 统一改名禁用（同时加 LIBYUV_DISABLE_SVE，选项名若存在则一并生效）。
-          grep -rl 'yuv_sve' /tmp/libyuv --include=CMakeLists.txt | xargs -r sed -i 's/yuv_sve/yuv_sve_off/g'
+          # zig 不支持 SVE2（-march=armv8.5-a+i8mm+sve2），libyuv 的 SVE 源文件会编译失败：
+          # 改名为 *.cc.disabled（CMake 显式列表与 glob 两种引用方式都不会再编译它们）。
+          for f in /tmp/libyuv/source/*_sve.cc; do
+            [ -e "$f" ] || continue
+            mv "$f" "$f.disabled"
+          done
+          sed -i -E 's/([A-Za-z0-9_]+_sve)\.cc/\1.cc.disabled/g' /tmp/libyuv/source/CMakeLists.txt
           cmake -S /tmp/libyuv -B /tmp/libyuv-build -G Ninja \
             -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
             -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \

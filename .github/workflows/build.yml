@@ -103,11 +103,13 @@ jobs:
           [ -s /tmp/libyuv.tgz ] || { echo "ERROR: libyuv 下载失败"; exit 1; }
           mkdir -p /tmp/libyuv && tar -xzf /tmp/libyuv.tgz -C /tmp/libyuv --strip-components=1
           [ -f /tmp/libyuv/CMakeLists.txt ] || { echo "ERROR: libyuv 无 CMakeLists.txt"; exit 1; }
-          # zig 不支持 SVE2（-march=armv8.5-a+i8mm+sve2），libyuv 的 SVE 源文件会编译失败：
-          # 改名为 *.cc.disabled（CMake 显式列表与 glob 两种引用方式都不会再编译它们）。
-          find /tmp/libyuv -name '*_sve.cc' -exec mv {} {}.disabled \;
-          grep -rl '_sve\.cc' /tmp/libyuv --include=CMakeLists.txt | xargs -r \
-            sed -i -E 's/([A-Za-z0-9_]+_sve)\.cc/\1.cc.disabled/g'
+          # zig 不支持 SVE2（-march=armv8.5-a+i8mm+sve2），libyuv 的 SVE 源文件会编译失败。
+          # 注意：不能把文件改名或改 CMakeLists 里的文件名——那会让 CMake 认不出源文件语言
+          # （报 "CMake can not determine linker language for target: yuv_sve"）。
+          # 正确做法是把 SVE/SME 源文件内容清空：目标结构不变，只是变空实现。
+          for f in $(find /tmp/libyuv -name '*_sve.cc' -o -name '*_sme.cc'); do
+            printf '// SVE/SME variant disabled for zig cross build\n' > "$f"
+          done
           cmake -S /tmp/libyuv -B /tmp/libyuv-build -G Ninja \
             -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
             -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \

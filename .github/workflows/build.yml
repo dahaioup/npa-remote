@@ -70,9 +70,12 @@ jobs:
             sudo chmod +x /usr/local/bin/aarch64-linux-gnu-$t
           done
           cd /tmp/libvpx
+          # 先把当前版本的 VP8 相关 configure 选项打出来（HEAD 的选项集会随版本变动，
+          # 之前 --disable-av1 / --enable-vp8-highbitdepth 都不存在于该版本）
+          ./configure --help 2>/dev/null | grep -iE 'vp8|vp9|bitdepth' | head -20 || true
           ./configure --target=aarch64-linux-gnu \
             --disable-examples --disable-tools --disable-unit-tests --disable-docs \
-            --disable-vp9 --enable-vp8 --enable-vp8-highbitdepth \
+            --disable-vp9 --enable-vp8 \
             --enable-static --disable-shared --enable-pic
           make -j4
           sudo mkdir -p $STATIC_ROOT/lib $STATIC_ROOT/include

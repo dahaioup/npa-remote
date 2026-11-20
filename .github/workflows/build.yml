@@ -89,7 +89,7 @@ jobs:
           ls build/make/ 2>/dev/null | head -20 || true
           ./configure --target="$VNX_TARGET" \
             --disable-examples --disable-tools --disable-unit-tests --disable-docs \
-            --disable-vp9 --enable-vp8 \
+            --enable-vp9 --enable-vp8 \
             --enable-static --disable-shared --enable-pic
           make -j4
           sudo mkdir -p $STATIC_ROOT/lib $STATIC_ROOT/include
@@ -127,11 +127,14 @@ jobs:
       - name: Provide static aom headers (scrap 只在 AV1 路径用 aom)
         run: |
           # scrap 的 build.rs 无条件要 aom 的头文件（bindgen）与链接参数，
-          # 但我们只走 VP8 路径 → 头文件用发行版的（架构无关），链接给一个空 archive。
+          # 但我们只走 VP8 路径 → 头文件用发行版的（架构无关），
+          # 链接给一个桩库（scripts/aom_stub.c，空实现占位）。
           sudo apt-get install -y libaom-dev
           sudo mkdir -p $STATIC_ROOT/include/aom
           sudo cp /usr/include/aom/*.h $STATIC_ROOT/include/aom/
-          $(command -v llvm-ar) crs $STATIC_ROOT/lib/libnpa_aom.a
+          # 链接用桩实现（我们只走 VP8，不编 libaom）
+          /usr/local/bin/zig-cc -c scripts/aom_stub.c -o /tmp/aom_stub.o
+          $(command -v llvm-ar) crs $STATIC_ROOT/lib/libnpa_aom.a /tmp/aom_stub.o
       - name: Write pkg-config (static only)
         run: |
           sudo mkdir -p $STATIC_ROOT/lib/pkgconfig

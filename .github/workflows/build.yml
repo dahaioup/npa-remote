@@ -73,7 +73,10 @@ jobs:
           # 先把当前版本的 VP8 相关 configure 选项打出来（HEAD 的选项集会随版本变动，
           # 之前 --disable-av1 / --enable-vp8-highbitdepth 都不存在于该版本）
           ./configure --help 2>/dev/null | grep -iE 'vp8|vp9|bitdepth' | head -20 || true
-          ./configure --target=aarch64-linux-gnu \
+          # libvpx 的 --target 用的是它自己认识的 toolchain 名（带 gcc 后缀），
+          # 不是 gcc 的 target 三元组；aarch64-linux-gcc 的 CROSS 前缀正是 aarch64-linux-gnu-
+          ./configure --help 2>/dev/null | grep -i 'aarch64' | head -5 || true
+          ./configure --target=aarch64-linux-gcc \
             --disable-examples --disable-tools --disable-unit-tests --disable-docs \
             --disable-vp9 --enable-vp8 \
             --enable-static --disable-shared --enable-pic

@@ -72,7 +72,7 @@ jobs:
           cd /tmp/libvpx
           ./configure --target=aarch64-linux-gnu \
             --disable-examples --disable-tools --disable-unit-tests --disable-docs \
-            --disable-vp9 --disable-av1 --enable-vp8 --enable-vp8-highbitdepth \
+            --disable-vp9 --enable-vp8 --enable-vp8-highbitdepth \
             --enable-static --disable-shared --enable-pic
           make -j4
           sudo mkdir -p $STATIC_ROOT/lib $STATIC_ROOT/include

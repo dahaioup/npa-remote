@@ -62,7 +62,10 @@ jobs:
           for t in gcc g++ ld; do
             printf '#!/bin/sh\nexec /opt/zig/zig %s --target=%s "$@"\n' "$t" "$ZIG_TARGET" \
               | sudo tee /usr/local/bin/aarch64-linux-gnu-$t > /dev/null
-            sudo chmod +x /usr/local/bin/aarch64-linux-gnu-$t
+            # 有些 toolchain 定义用的 CROSS 前缀是 arm64-linux-gnu-，两套都备上
+            printf '#!/bin/sh\nexec /opt/zig/zig %s --target=%s "$@"\n' "$t" "$ZIG_TARGET" \
+              | sudo tee /usr/local/bin/arm64-linux-gnu-$t > /dev/null
+            sudo chmod +x /usr/local/bin/aarch64-linux-gnu-$t /usr/local/bin/arm64-linux-gnu-$t
           done
           for t in ar ranlib nm strip; do
             printf '#!/bin/sh\nexec llvm-%s "$@"\n' "$t" \
@@ -73,12 +76,14 @@ jobs:
           # 先把当前版本的 VP8 相关 configure 选项打出来（HEAD 的选项集会随版本变动，
           # 之前 --disable-av1 / --enable-vp8-highbitdepth 都不存在于该版本）
           ./configure --help 2>/dev/null | grep -iE 'vp8|vp9|bitdepth' | head -20 || true
-          # libvpx 的 --target 用它自己 configure.sh 里 TARGET_LIST 的名字
+          # libvpx 的 --target 用它自己 toolchain.sh 里定义的名字
           # （arm64-linux-gcc / aarch64-linux-gcc … 随版本增减），不是 gcc 三元组。
           # 直接从源码里抓一个 aarch64/arm64 的 toolchain 名，避免再猜。
-          VNX_TARGET=$(grep -oE '[a-z0-9_-]+-linux-(gcc|gnu)' build/make/configure.sh \
+          VNX_TARGET=$(grep -ohE '[a-z0-9_-]+-linux-(gcc|gnu)' \
+            build/make/toolchain.sh build/make/configure.sh 2>/dev/null \
             | grep -E '^(aarch64|arm64)' | head -1)
           echo "libvpx target=$VNX_TARGET"
+          grep -A3 -E '^\s*(aarch64|arm64)-linux-(gcc|gnu)\)' build/make/toolchain.sh 2>/dev/null | head -12 || true
           [ -n "$VNX_TARGET" ] || { echo "ERROR: libvpx 没找到 aarch64 toolchain"; exit 1; }
           ./configure --target="$VNX_TARGET" \
             --disable-examples --disable-tools --disable-unit-tests --disable-docs \

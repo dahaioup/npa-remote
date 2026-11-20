@@ -110,13 +110,19 @@ jobs:
           sudo cp /tmp/libyuv/include/libyuv/*.h $STATIC_ROOT/include/libyuv/
       - name: Build static aom
         run: |
-          # AOM 用 GitHub 官方镜像的 tarball（Alliance-for-Open-Media/AOM 带 CMakeLists.txt；
-          # googlesource 的 +archive 对这个 tag 取不到）
+          # AOM 源码两个来源依次试（GitHub 镜像路径不可靠，googlesource 的 tag archive 也 404）：
+          #   1) chromium 里的 third_party/aom 快照（与 libyuv 同款 URL 形式，已验证可下）
+          #   2) aomedia googlesource 的 master
           rm -rf /tmp/aom /tmp/aom.tgz
-          curl -fsSL --retry 3 -o /tmp/aom.tgz \
-            "https://github.com/Alliance-for-Open-Media/AOM/archive/refs/tags/v3.9.0.tar.gz"
+          for U in \
+            "https://chromium.googlesource.com/chromium/src/third_party/aom/+archive/HEAD.tar.gz" \
+            "https://aomedia.googlesource.com/aom/+archive/master.tar.gz"; do
+            echo "try $U"
+            if curl -fsSL --retry 2 -o /tmp/aom.tgz "$U"; then break; fi
+          done
+          [ -s /tmp/aom.tgz ] || { echo "ERROR: aom 下载失败"; exit 1; }
           mkdir -p /tmp/aom && tar -xzf /tmp/aom.tgz -C /tmp/aom --strip-components=1
-          [ -f /tmp/aom/CMakeLists.txt ] || { echo "ERROR: aom 无 CMakeLists.txt"; exit 1; }
+          [ -f /tmp/aom/CMakeLists.txt ] || { echo "ERROR: aom 无 CMakeLists.txt"; ls /tmp/aom | head; exit 1; }
           cmake -S /tmp/aom -B /tmp/aom-build -G Ninja \
             -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
             -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \

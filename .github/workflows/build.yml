@@ -73,10 +73,14 @@ jobs:
           # 先把当前版本的 VP8 相关 configure 选项打出来（HEAD 的选项集会随版本变动，
           # 之前 --disable-av1 / --enable-vp8-highbitdepth 都不存在于该版本）
           ./configure --help 2>/dev/null | grep -iE 'vp8|vp9|bitdepth' | head -20 || true
-          # libvpx 的 --target 用的是它自己认识的 toolchain 名（带 gcc 后缀），
-          # 不是 gcc 的 target 三元组；aarch64-linux-gcc 的 CROSS 前缀正是 aarch64-linux-gnu-
-          ./configure --help 2>/dev/null | grep -i 'aarch64' | head -5 || true
-          ./configure --target=aarch64-linux-gcc \
+          # libvpx 的 --target 用它自己 configure.sh 里 TARGET_LIST 的名字
+          # （arm64-linux-gcc / aarch64-linux-gcc … 随版本增减），不是 gcc 三元组。
+          # 直接从源码里抓一个 aarch64/arm64 的 toolchain 名，避免再猜。
+          VNX_TARGET=$(grep -oE '[a-z0-9_-]+-linux-(gcc|gnu)' build/make/configure.sh \
+            | grep -E '^(aarch64|arm64)' | head -1)
+          echo "libvpx target=$VNX_TARGET"
+          [ -n "$VNX_TARGET" ] || { echo "ERROR: libvpx 没找到 aarch64 toolchain"; exit 1; }
+          ./configure --target="$VNX_TARGET" \
             --disable-examples --disable-tools --disable-unit-tests --disable-docs \
             --disable-vp9 --enable-vp8 \
             --enable-static --disable-shared --enable-pic

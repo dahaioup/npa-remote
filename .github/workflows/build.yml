@@ -98,28 +98,13 @@ jobs:
         run: |
           rm -rf /tmp/libyuv /tmp/libyuv.tgz
           # chromium 的 googlesource 子目录 +archive 取不到，改用社区镜像 lemenkov/libyuv
+          # 固定到 2022-12 的 commit：main 分支含 SVE2/SME 代码路径（zig 编不了，
+          # 要做一堆源码改写，反而不稳）；旧版只有 NEON/通用路径。
           curl -fsSL --retry 3 -o /tmp/libyuv.tgz \
-            "https://github.com/lemenkov/libyuv/archive/refs/heads/main.tar.gz"
+            "https://github.com/lemenkov/libyuv/archive/3abd6f36b6e4f5a2e0ce236580a8bc1da3c7cf7e.tar.gz"
           [ -s /tmp/libyuv.tgz ] || { echo "ERROR: libyuv 下载失败"; exit 1; }
           mkdir -p /tmp/libyuv && tar -xzf /tmp/libyuv.tgz -C /tmp/libyuv --strip-components=1
           [ -f /tmp/libyuv/CMakeLists.txt ] || { echo "ERROR: libyuv 无 CMakeLists.txt"; exit 1; }
-          # zig 不支持 SVE2/SME（需要 armv8.5-a+i8mm+sve2）。
-          # 做法：把 libyuv 的 SVE/SME 特性宏（HAVE_SVE / HAVE_SVE2 / HAVE_SME）整体改名，
-          # 分发层就不会再引用那些变体符号；同时把 SVE/SME 源文件内容清空（目标结构不变）。
-          # 注意：不能把源文件改名或改 CMakeLists 里的文件名——那会让 CMake 认不出源文件语言
-          # （报 "CMake can not determine linker language for target: yuv_sve"）。
-          # 也不能只去掉 *_SVE2/_SME 函数名后缀——会与同名通用定义冲突
-          # （报 "static declaration of 'TransposeWxH' follows non-static declaration"）。
-          grep -rlE 'HAVE_SVE2|HAVE_SVE|HAVE_SME' /tmp/libyuv \
-            --include=*.cc --include=*.h --include=CMakeLists.txt | xargs -r \
-            sed -i -E 's/(HAVE_SVE2|HAVE_SVE|HAVE_SME)\b/HAVE_NPA_NO_SVE/g'
-          # 再把分发层对 *_SME / *_SVE2 变体的**调用**换成通用实现（只替换调用点，
-          # 不动定义，否则会与同名通用定义冲突）。
-          grep -rlE '_SME|_SVE2' /tmp/libyuv --include=*.cc --include=*.h | xargs -r \
-            sed -i -E 's/([A-Za-z0-9_]+)_SME\(/\1(/g; s/([A-Za-z0-9_]+)_SVE2\(/\1(/g; s/\&([A-Za-z0-9_]+)_SME\b/\1/g; s/\&([A-Za-z0-9_]+)_SVE2\b/\1/g'
-          for f in $(find /tmp/libyuv -name '*_sve.cc' -o -name '*_sme.cc'); do
-            printf '// SVE/SME variant disabled for zig cross build\n' > "$f"
-          done
           cmake -S /tmp/libyuv -B /tmp/libyuv-build -G Ninja \
             -DCMAKE_C_COMPILER=/usr/local/bin/zig-cc \
             -DCMAKE_CXX_COMPILER=/usr/local/bin/zig-c++ \

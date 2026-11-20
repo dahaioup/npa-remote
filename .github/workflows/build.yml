@@ -95,8 +95,13 @@ jobs:
       - name: Build static libyuv
         run: |
           rm -rf /tmp/libyuv /tmp/libyuv.tgz
-          curl -fsSL --retry 3 -o /tmp/libyuv.tgz \
-            "https://chromium.googlesource.com/chromium/src/third_party/libyuv/+archive/HEAD.tar.gz"
+          for U in \
+            "https://chromium.googlesource.com/chromium/src/third_party/libyuv/+archive/refs/heads/main.tar.gz" \
+            "https://chromium.googlesource.com/chromium/src/third_party/libyuv/+archive/HEAD.tar.gz"; do
+            echo "try $U"
+            if curl -fsSL --retry 2 -o /tmp/libyuv.tgz "$U"; then break; fi
+          done
+          [ -s /tmp/libyuv.tgz ] || { echo "ERROR: libyuv 下载失败"; exit 1; }
           mkdir -p /tmp/libyuv && tar -xzf /tmp/libyuv.tgz -C /tmp/libyuv
           [ -f /tmp/libyuv/CMakeLists.txt ] || { echo "ERROR: libyuv 无 CMakeLists.txt"; exit 1; }
           cmake -S /tmp/libyuv -B /tmp/libyuv-build -G Ninja \
@@ -115,6 +120,7 @@ jobs:
           #   2) aomedia googlesource 的 master
           rm -rf /tmp/aom /tmp/aom.tgz
           for U in \
+            "https://chromium.googlesource.com/chromium/src/third_party/aom/+archive/refs/heads/main.tar.gz" \
             "https://chromium.googlesource.com/chromium/src/third_party/aom/+archive/HEAD.tar.gz" \
             "https://aomedia.googlesource.com/aom/+archive/master.tar.gz"; do
             echo "try $U"

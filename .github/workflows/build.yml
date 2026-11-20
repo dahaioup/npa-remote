@@ -104,13 +104,15 @@ jobs:
           mkdir -p /tmp/libyuv && tar -xzf /tmp/libyuv.tgz -C /tmp/libyuv --strip-components=1
           [ -f /tmp/libyuv/CMakeLists.txt ] || { echo "ERROR: libyuv 无 CMakeLists.txt"; exit 1; }
           # zig 不支持 SVE2/SME（需要 armv8.5-a+i8mm+sve2）。
-          # 两件事一起做：
-          # 1) 把分发层对 *_SVE2 / *_SME 变体的调用改成通用实现（否则链接缺符号）；
-          # 2) 把 SVE/SME 源文件内容清空（它们本身编不过）。
-          # 注意：不能只把源文件改名或改 CMakeLists 里的文件名——那会让 CMake 认不出源文件语言
+          # 做法：把 libyuv 的 SVE/SME 特性宏（HAVE_SVE / HAVE_SVE2 / HAVE_SME）整体改名，
+          # 分发层就不会再引用那些变体符号；同时把 SVE/SME 源文件内容清空（目标结构不变）。
+          # 注意：不能把源文件改名或改 CMakeLists 里的文件名——那会让 CMake 认不出源文件语言
           # （报 "CMake can not determine linker language for target: yuv_sve"）。
-          grep -rlE '_SVE2|_SME' /tmp/libyuv --include=*.cc --include=*.h | xargs -r \
-            sed -i -E 's/([A-Za-z0-9_]+)_SVE2\b/\1/g; s/([A-Za-z0-9_]+)_SME\b/\1/g'
+          # 也不能只去掉 *_SVE2/_SME 函数名后缀——会与同名通用定义冲突
+          # （报 "static declaration of 'TransposeWxH' follows non-static declaration"）。
+          grep -rlE 'HAVE_SVE2|HAVE_SVE|HAVE_SME' /tmp/libyuv \
+            --include=*.cc --include=*.h --include=CMakeLists.txt | xargs -r \
+            sed -i -E 's/(HAVE_SVE2|HAVE_SVE|HAVE_SME)\b/HAVE_NPA_NO_SVE/g'
           for f in $(find /tmp/libyuv -name '*_sve.cc' -o -name '*_sme.cc'); do
             printf '// SVE/SME variant disabled for zig cross build\n' > "$f"
           done

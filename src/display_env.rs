@@ -34,6 +34,29 @@ pub fn warn_throttled(key: &str, msg: &str) {
     }
 }
 
+/// 采集前的显示环境准备（进程启动早期调用，必须早于任何 X 连接建立）。
+///
+/// scrap 的 X11 后端会在首次调用时建立 XCB 连接并可能缓存，之后再改 DISPLAY
+/// 不一定生效（连接已经指向旧 display）。所以这里必须在进程启动阶段就把
+/// DISPLAY 定下来：
+///   1. DISPLAY 缺失 → 探测 /tmp/.X11-unix 补上；
+///   2. 有运行中的 Xvfb 虚拟屏 → 直接用它（无人值守机的会话 X 常无活动显示器）；
+///   3. 否则看真实活动显示器（xcap 枚举），有就用当前 DISPLAY；
+///   4. 都没有 → 新起一个 Xvfb 虚拟屏。
+#[cfg(target_os = "linux")]
+pub fn prepare_display_for_capture() {
+    ensure_display();
+    if ensure_virtual_display() {
+        tracing::info!(
+            "capture display ready: {}",
+            std::env::var("DISPLAY").unwrap_or_default()
+        );
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn prepare_display_for_capture() {}
+
 /// 补齐 DISPLAY（仅 Linux 有意义；其他平台直接返回）。
 ///
 /// 插件被 sidecar/systemd 拉起时环境里常常没有 DISPLAY，

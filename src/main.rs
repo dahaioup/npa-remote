@@ -44,7 +44,10 @@ enum Cmd {
 fn main() -> Result<()> {
     // 插件常被 NPA 的 sidecar 拉起，环境里可能没有 DISPLAY（systemd user 会话
     // 不导入 X11 变量）→ xcap / scrap 的 X11 后端会连不上显示器。先补上。
-    display_env::ensure_display();
+    //
+    // 关键：显示设备的最终选择必须在进程启动阶段完成 —— scrap 的 X11 后端首次
+    // 调用时会建立并缓存 XCB 连接，之后再改 DISPLAY 不一定生效。
+    display_env::prepare_display_for_capture();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

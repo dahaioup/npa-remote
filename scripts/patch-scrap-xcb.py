@@ -124,47 +124,17 @@ else:
     open(cap_path, "w", encoding="utf-8").write(cap)
     print("patched %s（同步 get_image）" % cap_path)
 
-# --- 3. iter.rs: RandR 枚举为空时用 screen 尺寸兜底 ---
+# --- 3. iter.rs: 撤销之前的 RandR 兜底（上游自带 screen fallback，无需补丁） ---
+# 之前的版本在「RandR 1.5 monitor 枚举为空」时自己造一个 Display，
+# 结果抓到 0 帧（pixfmt/rect 与真实 screen 不一致，采集直接失败）。
+# 上游 next_screen 本来就会退回到 X screen，所以这里保持原样、只做撤销。
 it = open(iter_path, encoding="utf-8").read()
 if "NPA: RandR 1.5" in it:
-    print("iter.rs 已打补丁，跳过")
-    sys.exit(0)
-
-anchor = """            // The current screen was empty, so try the next screen.
-            self.free_reply();
-"""
-inject = """            // NPA: RandR 1.5 monitor 枚举为空时（Xvfb 等无头虚拟屏只实现
-            // RANDR 1.2，没有 monitor 概念），用 X screen 的像素尺寸兜底造一个
-            // 显示器，否则 scrap 枚举不到任何屏幕 → 采集永远起不来。
-            unsafe {
-                let mut roots = xcb_setup_roots_iterator(self.server.setup());
-                if roots.rem != 0 {
-                    let screen = &*roots.data;
-                    let root = screen.root;
-                    let w = screen.width_in_pixels as u16;
-                    let h = screen.height_in_pixels as u16;
-                    let pixfmt = get_pixfmt(self.server.raw(), root).unwrap_or(Pixfmt::BGRA);
-                    let display = Display::new(
-                        self.server.clone(),
-                        true,
-                        Rect {
-                            x: 0,
-                            y: 0,
-                            w,
-                            h,
-                        },
-                        root,
-                        "screen0".to_owned(),
-                        pixfmt,
-                    );
-                    return Some(display);
-                }
-            }
-
-            // The current screen was empty, so try the next screen.
-            self.free_reply();
-"""
-if anchor not in it:
-    sys.exit("ERROR: %s 里找不到 iter 锚点（上游 scrap 结构可能变了）" % iter_path)
-open(iter_path, "w", encoding="utf-8").write(it.replace(anchor, inject, 1))
-print("patched %s" % iter_path)
+    start = it.index("            // NPA: RandR 1.5")
+    end_marker = "            // The current screen was empty, so try the next screen.\n"
+    end = it.index(end_marker, start)
+    it = it[:start] + it[end:]
+    open(iter_path, "w", encoding="utf-8").write(it)
+    print("reverted %s（撤销 RandR 兜底）" % iter_path)
+else:
+    print("iter.rs 无 RandR 兜底，保持上游原样")

@@ -46,6 +46,13 @@ pub fn ensure_display() {
         if std::env::var_os("DISPLAY").is_some() {
             return;
         }
+        // 优先复用已经在跑的 Xvfb 虚拟屏：无人值守机的会话 X（:0）通常一个活动
+        // 显示器都没有，采集不到画面；虚拟屏才是真正能出画面的那个。
+        if let Some(d) = find_running_xvfb_display() {
+            std::env::set_var("DISPLAY", &d);
+            tracing::info!("DISPLAY was unset, reusing running Xvfb display {d}");
+            return;
+        }
         let mut found: Option<String> = None;
         if let Ok(rd) = std::fs::read_dir("/tmp/.X11-unix") {
             let mut socks: Vec<String> = rd
@@ -100,6 +107,14 @@ pub fn ensure_virtual_display() -> bool {
     if std::env::var_os("NPA_NO_XVFB").is_some() {
         return false;
     }
+    // 已经挂在运行中的 Xvfb 虚拟屏上就直接复用（插件重启不要每次都新起 :90/:91…）
+    if let Some(d) = find_running_xvfb_display() {
+        if std::env::var("DISPLAY").ok().as_deref() == Some(d.as_str()) {
+            tracing::info!("reusing running virtual display {d}");
+            *guard = Some(d);
+            return true;
+        }
+    }
     // 已经有可用的显示器就直接复用（插件重启时不要每次都新起一个 :90/:91…）
     // 注意：不能用 xcap::Monitor::all() 判断——它同样依赖 RandR 1.5 的 monitor 枚举，
     // 在只有 RANDR 1.2 的无头 X server 上恒为空；scrap 打了补丁后能按 screen 尺寸兜底。
@@ -147,9 +162,41 @@ pub fn ensure_virtual_display() -> bool {
     true
 }
 
+/// 扫描 /proc，找出正在运行的 Xvfb 及其 display 号（如 :90）。
+/// 无人值守机上会话 X（:0）没有活动显示器，真正能出画面的往往是我们自己起的虚拟屏。
 #[cfg(target_os = "linux")]
-fn find_xvfb() -> Option<String> {
-    let mut dirs: Vec<String> = std::env::var("PATH")
+fn find_running_xvfb_display() -> Option<String> {
+    let mut entries: Vec<_> = match std::fs::read_dir("/proc") {
+        Ok(rd) => rd.flatten().collect(),
+        Err(_) => return None,
+    };
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let raw = match std::fs::read(format!("/proc/{name}/cmdline")) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let text = String::from_utf8_lossy(&raw).replace('\0', " ");
+        if !text.contains("Xvfb") {
+            continue;
+        }
+        for tok in text.split_whitespace() {
+            if let Some(num) = tok.strip_prefix(':') {
+                if !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) {
+                    return Some(format!(":{num}"));
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn find_xvfb() -> Option<String> {    let mut dirs: Vec<String> = std::env::var("PATH")
         .unwrap_or_default()
         .split(':')
         .filter(|d| !d.is_empty())

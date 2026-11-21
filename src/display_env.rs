@@ -100,6 +100,15 @@ pub fn ensure_virtual_display() -> bool {
     if std::env::var_os("NPA_NO_XVFB").is_some() {
         return false;
     }
+    // 已经有可用的显示器就直接复用（插件重启时不要每次都新起一个 :90/:91…）
+    if let Ok(mons) = xcap::Monitor::all() {
+        if !mons.is_empty() {
+            let d = std::env::var("DISPLAY").unwrap_or_default();
+            tracing::info!("reusing existing display {d} ({} monitors)", mons.len());
+            *guard = Some(d);
+            return true;
+        }
+    }
     let Some(xvfb) = find_xvfb() else {
         warn_throttled(
             "xvfb",

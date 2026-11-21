@@ -163,21 +163,6 @@ impl VpxStream {
         (self.width, self.height)
     }
 
-    /// Linux 专用：flush XCB 连接并等 X server 处理完上一轮的 shm 抓图请求。
-    #[cfg(target_os = "linux")]
-    fn flush_xcb(&self) {
-        unsafe {
-            extern "C" {
-                fn xcb_flush(c: *mut core::ffi::c_void) -> core::ffi::c_int;
-            }
-            let raw = self.capturer.raw_server();
-            if !raw.is_null() {
-                xcb_flush(raw);
-                // 给 X server 一点时间处理抓图请求，让 shm 缓冲在下一次 frame() 时是新画面
-                std::thread::sleep(std::time::Duration::from_millis(8));
-            }
-        }
-    }
 
     /// 热调画质档（档位切换）：按当前编码分辨率折算 ratio 后走 vpx_codec_enc_config_set，
     /// 不重建采集与编码器，画面不中断。
@@ -193,10 +178,8 @@ impl VpxStream {
     /// 抓取并编码一帧。无新帧时返回 Ok(None)。
     pub fn encode_one(&mut self) -> Result<Option<EncodedFrame>> {
         // Linux：scrap 的 X11 采集用 xcb_shm_get_image_unchecked（不等待 reply），
-        // 共享内存要等请求真正被 X server 处理才会更新。RustDesk 自己有 base 层
-        // 定期 flush XCB 连接，我们没有 → 必须自己 flush，否则画面永远停在首帧。
-        #[cfg(target_os = "linux")]
-        self.flush_xcb();
+        // 共享内存要等请求真正被 X server 处理才会更新 → 由 scripts/patch-scrap-xcb.py
+        // 在 scrap 内部 get_image() 之后 flush 并等待（详见该脚本注释）。
         let frame = match self.capturer.frame(std::time::Duration::from_millis(50)) {
             Ok(f) => f,
             Err(e) => {

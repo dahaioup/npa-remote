@@ -101,10 +101,12 @@ pub fn ensure_virtual_display() -> bool {
         return false;
     }
     // 已经有可用的显示器就直接复用（插件重启时不要每次都新起一个 :90/:91…）
-    if let Ok(mons) = xcap::Monitor::all() {
-        if !mons.is_empty() {
+    // 注意：不能用 xcap::Monitor::all() 判断——它同样依赖 RandR 1.5 的 monitor 枚举，
+    // 在只有 RANDR 1.2 的无头 X server 上恒为空；scrap 打了补丁后能按 screen 尺寸兜底。
+    if let Ok(displays) = scrap::Display::all() {
+        if !displays.is_empty() {
             let d = std::env::var("DISPLAY").unwrap_or_default();
-            tracing::info!("reusing existing display {d} ({} monitors)", mons.len());
+            tracing::info!("reusing existing display {d} ({} displays)", displays.len());
             *guard = Some(d);
             return true;
         }

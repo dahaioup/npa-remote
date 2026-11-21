@@ -5,11 +5,14 @@
 
 1. src/x11/ffi.rs：补 xcb_flush 的 FFI 声明（上游没绑）。
 
-2. src/x11/capturer.rs：get_image() 之后 flush + 短暂等待。
+2. src/x11/capturer.rs：get_image() 之后 flush + 同步等待。
    scrap 的 X11 抓图用 `xcb_shm_get_image_unchecked`（不等待回包），请求发出后
    必须 flush 才会真正送到 X server；共享内存要等 X server 处理完请求才更新。
    RustDesk 在 base 层定期 flush，独立使用 scrap 时没有这一层 → 画面永远停在
    首帧（实测 20 秒只有 2 帧）。
+   只 flush 不够：flush 只保证字节写进 socket，服务器处理是异步的；因此 flush
+   之后补发一个带 reply 的请求（shm query_version）并等它回包——按 X 协议顺序
+   处理，等它回包就说明前面的 unchecked 抓图请求已经处理完、shm 已更新。
 
 3. src/x11/iter.rs：RandR 1.5 的 monitor 枚举为空时，用 X screen 的像素尺寸
    兜底造一个显示器。Xvfb 等无头虚拟屏只实现 RANDR 1.2（没有 monitor 概念），
@@ -48,19 +51,31 @@ else:
 
 # --- 2. capturer.rs: get_image 之后 flush ---
 cap = open(cap_path, encoding="utf-8").read()
-if "NPA: flush XCB" in cap:
-    print("capturer.rs 已打补丁，跳过")
+old_block = """            // NPA: flush XCB — unchecked 请求必须推出才会被 X server 处理，
+            // 否则 shm 内容不更新、画面永远停在首帧（RustDesk 在 base 层做这件事）。
+            xcb_flush(self.display.server().raw());
+            std::thread::sleep(std::time::Duration::from_millis(8));
+"""
+new_block = """            // NPA: flush + 同步 — unchecked 请求必须 flush 才会真的送到 X server；
+            // 再发一个带 reply 的请求（shm query_version）等服务器把前一个请求处理完，
+            // 共享内存内容才会更新（否则画面永远停在首帧，只推第一帧）。
+            xcb_flush(self.display.server().raw());
+            let sync_cookie = xcb_shm_query_version(self.display.server().raw());
+            let _ = xcb_shm_query_version_reply(self.display.server().raw(), sync_cookie, ptr::null_mut());
+"""
+if old_block in cap:
+    cap = cap.replace(old_block, new_block, 1)
+    open(cap_path, "w", encoding="utf-8").write(cap)
+    print("upgraded %s（flush → flush+同步）" % cap_path)
+elif "NPA: flush + 同步" in cap:
+    print("capturer.rs 已是新版（flush + 同步），跳过")
 else:
     anchor = """            libc::free(response as *mut _);
         }
     }
 """
     inject = """            libc::free(response as *mut _);
-            // NPA: flush XCB — unchecked 请求必须推出才会被 X server 处理，
-            // 否则 shm 内容不更新、画面永远停在首帧（RustDesk 在 base 层做这件事）。
-            xcb_flush(self.display.server().raw());
-            std::thread::sleep(std::time::Duration::from_millis(8));
-        }
+""" + new_block + """        }
     }
 """
     if anchor not in cap:

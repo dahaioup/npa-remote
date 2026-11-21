@@ -49,6 +49,30 @@ if "xcb_flush" not in ffi:
 else:
     print("ffi.rs 已打补丁，跳过")
 
+# --- 1b. ffi.rs: 同步版 xcb_shm_get_image 声明（带 cookie，能等回复） ---
+if "pub fn xcb_shm_get_image(" not in ffi:
+    anchor2 = "    pub fn xcb_shm_get_image_unchecked(\n"
+    if anchor2 not in ffi:
+        sys.exit("ERROR: %s 里找不到 xcb_shm_get_image_unchecked 锚点" % ffi_path)
+    decl = """    pub fn xcb_shm_get_image(
+        c: *mut xcb_connection_t,
+        drawable: xcb_drawable_t,
+        x: i16,
+        y: i16,
+        width: u16,
+        height: u16,
+        plane_mask: u32,
+        format: u8,
+        shmseg: xcb_shm_seg_t,
+        offset: u32,
+    ) -> xcb_shm_get_image_cookie_t;
+"""
+    ffi = ffi.replace(anchor2, decl + anchor2, 1)
+    open(ffi_path, "w", encoding="utf-8").write(ffi)
+    print("patched ffi.rs（同步 get_image 声明）")
+else:
+    print("ffi.rs 已有同步 get_image 声明，跳过")
+
 # --- 2. capturer.rs: get_image 之后 flush ---
 cap = open(cap_path, encoding="utf-8").read()
 old_block = """            // NPA: flush XCB — unchecked 请求必须推出才会被 X server 处理，
@@ -82,6 +106,23 @@ else:
         sys.exit("ERROR: %s 里找不到 get_image 锚点（上游 scrap 结构可能变了）" % cap_path)
     open(cap_path, "w", encoding="utf-8").write(cap.replace(anchor, inject, 1))
     print("patched %s" % cap_path)
+
+# --- 2b. capturer.rs: 改用同步版 get_image（带 cookie，等服务器回包） ---
+# unchecked 版本在部分 X server（Xvfb）上不会真正填充共享内存，
+# 改用带 cookie 的同步版本：请求发出后等回复，保证 shm 内容已更新。
+if "NPA: sync get_image" in cap:
+    print("capturer.rs 已用同步 get_image，跳过")
+else:
+    call_anchor = "let request = xcb_shm_get_image_unchecked("
+    if call_anchor not in cap:
+        sys.exit("ERROR: %s 里找不到 get_image 调用点（上游 scrap 结构可能变了）" % cap_path)
+    cap = cap.replace(
+        call_anchor,
+        "let request = xcb_shm_get_image( // NPA: sync get_image\n                ",
+        1,
+    )
+    open(cap_path, "w", encoding="utf-8").write(cap)
+    print("patched %s（同步 get_image）" % cap_path)
 
 # --- 3. iter.rs: RandR 枚举为空时用 screen 尺寸兜底 ---
 it = open(iter_path, encoding="utf-8").read()

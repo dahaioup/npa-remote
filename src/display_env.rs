@@ -107,24 +107,29 @@ pub fn ensure_virtual_display() -> bool {
     if std::env::var_os("NPA_NO_XVFB").is_some() {
         return false;
     }
-    // 已经挂在运行中的 Xvfb 虚拟屏上就直接复用（插件重启不要每次都新起 :90/:91…）
+    // 已经在跑 Xvfb 虚拟屏：直接用它（当前 DISPLAY 不是它就切过去）。
+    // 无人值守机的会话 X（:0）虽然存在，但一个活动显示器都没有 → 采集到的是黑屏。
     if let Some(d) = find_running_xvfb_display() {
-        if std::env::var("DISPLAY").ok().as_deref() == Some(d.as_str()) {
+        if std::env::var("DISPLAY").ok().as_deref() != Some(d.as_str()) {
+            std::env::set_var("DISPLAY", &d);
+            tracing::info!("switched to running virtual display {d}");
+        } else {
             tracing::info!("reusing running virtual display {d}");
-            *guard = Some(d);
-            return true;
         }
+        *guard = Some(d);
+        return true;
     }
-    // 已经有可用的显示器就直接复用（插件重启时不要每次都新起一个 :90/:91…）
-    // 注意：不能用 xcap::Monitor::all() 判断——它同样依赖 RandR 1.5 的 monitor 枚举，
-    // 在只有 RANDR 1.2 的无头 X server 上恒为空；scrap 打了补丁后能按 screen 尺寸兜底。
-    if let Ok(displays) = scrap::Display::all() {
-        if !displays.is_empty() {
+    // 没有虚拟屏，但有真实的活动显示器 → 用当前 DISPLAY。
+    // xcap 依赖 RandR 1.5 的 monitor 枚举：真机上非空；会话 X 上所有输出口
+    // disconnected 时为空，正好用来区分「有画面」和「只有黑屏」。
+    match xcap::Monitor::all() {
+        Ok(mons) if !mons.is_empty() => {
             let d = std::env::var("DISPLAY").unwrap_or_default();
-            tracing::info!("reusing existing display {d} ({} displays)", displays.len());
+            tracing::info!("reusing active display {d} ({} monitors)", mons.len());
             *guard = Some(d);
             return true;
         }
+        _ => {}
     }
     let Some(xvfb) = find_xvfb() else {
         warn_throttled(

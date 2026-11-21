@@ -29,9 +29,6 @@ pub struct VpxStream {
     ms: i64,
     /// 最近一次编码有输出的时刻（区分 libvpx 正常丢帧 vs 编码器卡死）
     no_output_since: std::time::Instant,
-    /// Linux 专用：XCB 连接指针（scrap 的 X11 采集用 unchecked 请求，需要我们自己 flush）
-    #[cfg(target_os = "linux")]
-    xcb: *mut core::ffi::c_void,
 }
 
 /// 一帧编码结果：(key, vp8 data)
@@ -142,12 +139,6 @@ impl VpxStream {
         }
         let idx = screen.load(std::sync::atomic::Ordering::Relaxed).min(displays.len() - 1);
         let display = displays.swap_remove(idx);
-        // Linux: 记住 XCB 连接指针（scrap 的 X11 采集用 unchecked 请求，需我们自己 flush）
-        #[cfg(target_os = "linux")]
-        let xcb = match &display {
-            scrap::Display::X11(x) => x.server().raw() as *mut core::ffi::c_void,
-            _ => std::ptr::null_mut(),
-        };
         // 编码器延到首帧创建，输出尺寸以实际采集帧为准（见 encode_one）：
         // 既不依赖 display.width()/height()（其内部走 BackingScaleFactor），
         // 又保证编码尺寸与真实帧严格一致。
@@ -165,8 +156,6 @@ impl VpxStream {
             mid: Vec::new(),
             ms: 0,
             no_output_since: std::time::Instant::now(),
-            #[cfg(target_os = "linux")]
-            xcb,
         })
     }
 
@@ -181,8 +170,9 @@ impl VpxStream {
             extern "C" {
                 fn xcb_flush(c: *mut core::ffi::c_void) -> core::ffi::c_int;
             }
-            if !self.xcb.is_null() {
-                xcb_flush(self.xcb);
+            let raw = self.capturer.raw_server();
+            if !raw.is_null() {
+                xcb_flush(raw);
                 // 给 X server 一点时间处理抓图请求，让 shm 缓冲在下一次 frame() 时是新画面
                 std::thread::sleep(std::time::Duration::from_millis(8));
             }

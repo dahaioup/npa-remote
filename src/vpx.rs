@@ -129,7 +129,13 @@ impl VpxStream {
         // 必须用 all() 取第一块屏（与 rustdesk 本体一致）。
         let mut displays = scrap::Display::all().context("no display")?;
         if displays.is_empty() {
-            anyhow::bail!("no display found");
+            // 无人值守机：X server 没有活动显示器 → 起 Xvfb 虚拟屏再试一次
+            if crate::display_env::ensure_virtual_display() {
+                displays = scrap::Display::all().context("no display (after virtual screen)")?;
+            }
+            if displays.is_empty() {
+                anyhow::bail!("no display found");
+            }
         }
         let idx = screen.load(std::sync::atomic::Ordering::Relaxed).min(displays.len() - 1);
         let display = displays.swap_remove(idx);

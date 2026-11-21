@@ -59,14 +59,32 @@ pub fn screen_count() -> usize {
 
 /// 枚举屏幕（id 从 0 起），前端下拉框用。
 pub fn screen_list() -> Vec<(usize, u32, u32)> {
-    xcap::Monitor::all()
-        .map(|ms| {
-            ms.iter()
+    if let Some(ms) = list_monitors() {
+        if !ms.is_empty() {
+            return ms
+                .iter()
                 .enumerate()
                 .map(|(i, m)| (i, m.width() as u32, m.height() as u32))
-                .collect()
-        })
-        .unwrap_or_default()
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+/// 列出显示器；一个都没有时（无人值守机所有输出口 disconnected），
+/// 尝试用 Xvfb 起虚拟屏再列一次。
+fn list_monitors() -> Option<Vec<xcap::Monitor>> {
+    if let Ok(ms) = xcap::Monitor::all() {
+        if !ms.is_empty() {
+            return Some(ms);
+        }
+    }
+    if crate::display_env::ensure_virtual_display() {
+        if let Ok(ms) = xcap::Monitor::all() {
+            return Some(ms);
+        }
+    }
+    None
 }
 
 /// 全屏帧：优先 xcap 按选定屏抓取，权限受限时回退平台 CLI。
@@ -74,7 +92,7 @@ fn grab_full() -> Result<RgbaImage> {
     // sidecar 拉起时环境可能没有 DISPLAY，先探测补齐（Linux）
     crate::display_env::ensure_display();
     let sel = SCREEN_SEL.load(std::sync::atomic::Ordering::Relaxed);
-    if let Ok(mut monitors) = xcap::Monitor::all() {
+    if let Some(mut monitors) = list_monitors() {
         if !monitors.is_empty() {
             let idx = sel.min(monitors.len() - 1);
             match monitors.swap_remove(idx).capture_image() {

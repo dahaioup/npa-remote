@@ -68,13 +68,25 @@ pub fn prepare_display_for_capture() {
 #[cfg(not(target_os = "linux"))]
 pub fn prepare_display_for_capture() {}
 
-/// 当前 DISPLAY 指向的 X server 是否还活着（socket 存在即认为可达）。
+/// 当前 DISPLAY 指向的 X server 是否还活着。
+///
+/// 注意：光看 /tmp/.X11-unix/X<n> 这个文件存在是不够的——机器上可能留着
+/// 早已退出、没人监听的陈旧 socket（用户换过、容器重启过都会留下）。
+/// 那种 socket 连上去会直接 ECONNREFUSED，xlib 只能报 "No protocol specified"，
+/// 于是整条采集链路静默失败。所以这里直接连一下 socket 探活。
 #[cfg(target_os = "linux")]
 pub fn current_display_reachable() -> bool {
     let Some(num) = current_display_number() else {
         return false;
     };
-    std::path::Path::new(&format!("/tmp/.X11-unix/X{num}")).exists()
+    x_socket_alive(num)
+}
+
+/// X socket 是否真的有人在监听（陈旧 socket 文件不算）。
+#[cfg(target_os = "linux")]
+fn x_socket_alive(num: u32) -> bool {
+    use std::os::unix::net::UnixStream;
+    UnixStream::connect(format!("/tmp/.X11-unix/X{num}")).is_ok()
 }
 
 /// 解析 DISPLAY 里的 display 号（":0" / ":0.0" / "host:0.0" → 0）。
@@ -95,17 +107,23 @@ pub fn ensure_display() {
     use std::sync::Once;
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        if std::env::var_os("DISPLAY").is_some() {
-            return;
+        // DISPLAY 已经指向一个活着的 X server：就用它（无人值守机的会话 X
+        // 常常没有活动显示器，但根窗口里有桌面内容，scrap 的根窗口兜底能抓到）。
+        if let Ok(cur) = std::env::var("DISPLAY") {
+            if current_display_reachable() {
+                return;
+            }
+            tracing::warn!("DISPLAY={cur} is not reachable, probing other X servers");
+            std::env::remove_var("DISPLAY");
         }
-        // 优先真实会话屏（:0 之类）：无人值守机的会话 X 虽然没有活动显示器，
-        // 但根窗口里是有桌面内容的，scrap 的根窗口兜底能抓到。
-        // 只有在没有真实会话屏时才退到 Xvfb。
+        // 优先真实会话屏（:0 之类），其次运行中的 Xvfb；两者都要先探活，
+        // 陈旧 socket 一律跳过。
         let socks = list_x_sockets();
-        if let Some(num) = socks.iter().copied().find(|n| !display_is_xvfb(*n)) {
+        let alive: Vec<u32> = socks.into_iter().filter(|n| x_socket_alive(*n)).collect();
+        if let Some(num) = alive.iter().copied().find(|n| !display_is_xvfb(*n)) {
             let d = format!(":{num}");
             std::env::set_var("DISPLAY", &d);
-            tracing::info!("DISPLAY was unset, detected session display {d}");
+            tracing::info!("DISPLAY was unset, detected live session display {d}");
             return;
         }
         if let Some(d) = find_running_xvfb_display() {
@@ -113,13 +131,13 @@ pub fn ensure_display() {
             tracing::info!("DISPLAY was unset, reusing running Xvfb display {d}");
             return;
         }
-        if let Some(num) = socks.first().copied() {
+        if let Some(num) = alive.first().copied() {
             let d = format!(":{num}");
             std::env::set_var("DISPLAY", &d);
             tracing::info!("DISPLAY was unset, detected {d} from /tmp/.X11-unix");
             return;
         }
-        tracing::warn!("DISPLAY unset and no X11 socket found in /tmp/.X11-unix");
+        tracing::warn!("DISPLAY unset and no live X11 socket found in /tmp/.X11-unix");
     });
 }
 

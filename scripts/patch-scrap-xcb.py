@@ -15,8 +15,10 @@
    处理，等它回包就说明前面的 unchecked 抓图请求已经处理完、shm 已更新。
 
 3. src/x11/iter.rs：RandR 1.5 的 monitor 枚举为空时，用 X screen 的像素尺寸
-   兜底造一个显示器。Xvfb 等无头虚拟屏只实现 RANDR 1.2（没有 monitor 概念），
-   `xcb_randr_get_monitors` 返回空 → scrap 枚举不到任何显示器 → 采集起不来。
+   兜底造一个显示器（抓根窗口）。无人值守机的会话 X 上所有输出口都是
+   disconnected，`xcb_randr_get_monitors` 返回空 → scrap 枚举不到任何显示器 →
+   采集起不来（黑屏）；但会话根窗口里有桌面内容。上游的兜底只是「换下一个
+   screen」，单屏时直接返回 None，没有根窗口兜底。
    RustDesk 桌面环境有真实显示器，所以上游没做这个兜底。
 """
 import os
@@ -124,17 +126,126 @@ else:
     open(cap_path, "w", encoding="utf-8").write(cap)
     print("patched %s（同步 get_image）" % cap_path)
 
-# --- 3. iter.rs: 撤销之前的 RandR 兜底（上游自带 screen fallback，无需补丁） ---
-# 之前的版本在「RandR 1.5 monitor 枚举为空」时自己造一个 Display，
-# 结果抓到 0 帧（pixfmt/rect 与真实 screen 不一致，采集直接失败）。
-# 上游 next_screen 本来就会退回到 X screen，所以这里保持原样、只做撤销。
+# --- 3. iter.rs: RandR 枚举不到 monitor 时，用 X screen 尺寸抓根窗口兜底 ---
+# 无人值守机的会话 X（lightdm/Xorg）上所有输出口都是 disconnected，
+# RandR 1.5 的 `xcb_randr_get_monitors` 返回空列表 → scrap 一个显示器都枚举不到
+# → 采集起不来（黑屏）。但会话根窗口里其实有桌面内容。
+# 上游的兜底只是「换下一个 screen」，单屏时直接返回 None，没有根窗口兜底。
+# 这里在「本 screen 没有 active monitor」时，用该 X screen 的像素尺寸 + 根窗口
+# 合成一个 Display，让 scrap 能抓到真实桌面。
 it = open(iter_path, encoding="utf-8").read()
-if "NPA: RandR 1.5" in it:
-    start = it.index("            // NPA: RandR 1.5")
-    end_marker = "            // The current screen was empty, so try the next screen.\n"
-    end = it.index(end_marker, start)
-    it = it[:start] + it[end:]
-    open(iter_path, "w", encoding="utf-8").write(it)
-    print("reverted %s（撤销 RandR 兜底）" % iter_path)
+if "NPA: RandR fallback" in it:
+    print("iter.rs 已有 RandR 兜底，跳过")
 else:
-    print("iter.rs 无 RandR 兜底，保持上游原样")
+    patches = [
+        # 3.1 结构体字段带上 X screen 尺寸
+        (
+            """    inner: Option<(
+        xcb_randr_monitor_info_iterator_t,
+        xcb_window_t,
+        *mut xcb_randr_get_monitors_reply_t,
+    )>,""",
+            """    inner: Option<(
+        xcb_randr_monitor_info_iterator_t,
+        xcb_window_t,
+        *mut xcb_randr_get_monitors_reply_t,
+        u16, // NPA: X screen width in pixels (RandR fallback)
+        u16, // NPA: X screen height in pixels (RandR fallback)
+    )>,""",
+        ),
+        # 3.2 next_screen 返回值类型
+        (
+            """    ) -> Option<(
+        xcb_randr_monitor_info_iterator_t,
+        xcb_window_t,
+        *mut xcb_randr_get_monitors_reply_t,
+    )> {""",
+            """    ) -> Option<(
+        xcb_randr_monitor_info_iterator_t,
+        xcb_window_t,
+        *mut xcb_randr_get_monitors_reply_t,
+        u16, // NPA
+        u16, // NPA
+    )> {""",
+        ),
+        # 3.3 取 X screen 像素尺寸
+        (
+            """            let root = (*outer.data).root;
+""",
+            """            let root = (*outer.data).root;
+            // NPA: RandR fallback — remember the X screen pixel size so a screen
+            // without any active monitor can still be captured (root window).
+            let sw = (*outer.data).width_in_pixels;
+            let sh = (*outer.data).height_in_pixels;
+""",
+        ),
+        # 3.4 返回值带上尺寸
+        (
+            """            Some((inner, root, response))
+""",
+            """            Some((inner, root, response, sw, sh))
+""",
+        ),
+        # 3.5 next() 的模式
+        (
+            """            if let Some((ref mut inner, root, _)) = self.inner {
+""",
+            """            if let Some((ref mut inner, root, _, _, _)) = self.inner {
+""",
+        ),
+        # 3.6 free_reply 的模式
+        (
+            """        if let Some((_, _, response)) = self.inner.take() {
+""",
+            """        if let Some((_, _, response, _, _)) = self.inner.take() {
+""",
+        ),
+        # 3.7 根窗口兜底
+        (
+            """            // The current screen was empty, so try the next screen.
+            self.free_reply();
+            self.inner = Self::next_screen(&mut self.outer, &self.server);
+""",
+            """            // NPA: RandR fallback — this screen reports no active monitor. On a
+            // headless session X server every output is "disconnected", so
+            // RandR 1.5 returns an empty monitor list even though the session
+            // root window still holds the desktop. Capture the root window
+            // using the X screen's pixel size instead of giving up.
+            let fallback = match &self.inner {
+                Some((_, root, _, sw, sh)) => Some((*root, *sw, *sh)),
+                None => None,
+            };
+            if let Some((root, sw, sh)) = fallback {
+                unsafe {
+                    let pixfmt = get_pixfmt(self.server.raw(), root).unwrap_or(Pixfmt::BGRA);
+                    let display = Display::new(
+                        self.server.clone(),
+                        true,
+                        Rect {
+                            x: 0,
+                            y: 0,
+                            w: sw,
+                            h: sh,
+                        },
+                        root,
+                        "screen0".to_owned(),
+                        pixfmt,
+                    );
+                    self.free_reply();
+                    self.inner = Self::next_screen(&mut self.outer, &self.server);
+                    return Some(display);
+                }
+            }
+
+            // The current screen was empty, so try the next screen.
+            self.free_reply();
+            self.inner = Self::next_screen(&mut self.outer, &self.server);
+""",
+        ),
+    ]
+    for old, new in patches:
+        if old not in it:
+            sys.exit("ERROR: %s 里找不到锚点（上游 scrap 结构可能变了）:\n%s" % (iter_path, old[:160]))
+        it = it.replace(old, new, 1)
+    open(iter_path, "w", encoding="utf-8").write(it)
+    print("patched %s（RandR 根窗口兜底）" % iter_path)

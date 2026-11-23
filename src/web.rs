@@ -31,6 +31,7 @@ struct StreamCfg {
     tier: std::sync::atomic::AtomicU8,
     scale: std::sync::atomic::AtomicU8, // 百分比 50/70/90/100
     fps: std::sync::atomic::AtomicU64,
+    codec: std::sync::atomic::AtomicU8, // 0=自动 1=VP8 2=JPEG
 }
 
 impl StreamCfg {
@@ -39,6 +40,7 @@ impl StreamCfg {
             tier: std::sync::atomic::AtomicU8::new(3), // 默认流畅 1M
             scale: std::sync::atomic::AtomicU8::new(100),
             fps: std::sync::atomic::AtomicU64::new(DEFAULT_FPS),
+            codec: std::sync::atomic::AtomicU8::new(CODEC_AUTO),
         }
     }
     fn tier(&self) -> u8 {
@@ -49,6 +51,9 @@ impl StreamCfg {
     }
     fn fps(&self) -> u64 {
         self.fps.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn codec(&self) -> u8 {
+        self.codec.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -323,6 +328,12 @@ async fn handle_control(v: &Value, cfg: &StreamCfg) -> String {
                 cfg.fps.store(fps, std::sync::atomic::Ordering::Relaxed);
                 Ok(serde_json::json!({"ok":true,"fps":fps}))
             }
+            "codec" => {
+                // 编码切换：0=自动（VP8 优先，失败降级 JPEG）1=强制 VP8 2=强制 JPEG
+                let codec = v.get("v").and_then(|x| x.as_u64()).unwrap_or(0).min(2) as u8;
+                cfg.codec.store(codec, std::sync::atomic::Ordering::Relaxed);
+                Ok(serde_json::json!({"ok":true,"codec":codec,"label":CODEC_LABELS[codec as usize]}))
+            }
             _ => Err(format!("unknown type: {t}")),
         }
     }
@@ -356,8 +367,16 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Windows/macOS：DXGI/Quartz 采集 + VP8（RustDesk scrap），帧 framing [type=2][key][len LE][data]。
-/// VP8 初始化或连续编码失败时回退 JPEG（xcap），保证浏览器始终有画面。
+/// 编码选择：0=自动（VP8 优先，失败降级 JPEG）、1=强制 VP8、2=强制 JPEG。
+const CODEC_AUTO: u8 = 0;
+const CODEC_VP8: u8 = 1;
+const CODEC_JPEG: u8 = 2;
+const CODEC_LABELS: [&str; 3] = ["自动", "VP8", "JPEG"];
+
+/// Windows/macOS/Linux：DXGI/Quartz/X11 采集 + VP8（RustDesk scrap），帧 framing [type=2][key][len LE][data]。
+/// VP8 初始化或连续编码失败时回退 JPEG，保证浏览器始终有画面。
+/// 编码可在前端切换（自动 / 强制 VP8 / 强制 JPEG）；JPEG 与 VP8 共用同一个
+/// scrap 采集源（无人值守机 xcap 抓不到画面时，scrap 的根窗口兜底能抓到）。
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 async fn stream_vpx(tx: mpsc::Sender<Vec<u8>>, cfg: std::sync::Arc<StreamCfg>) {
     let handle = tokio::task::spawn_blocking(move || {
@@ -366,6 +385,7 @@ async fn stream_vpx(tx: mpsc::Sender<Vec<u8>>, cfg: std::sync::Arc<StreamCfg>) {
         let mut last_tier = cfg.tier();
         let mut last_scale = cfg.scale();
         let mut last_fps = cfg.fps();
+        let mut last_codec = cfg.codec();
         // JPEG 回退态下定期重试 VP8（自愈）
         let mut last_retry = std::time::Instant::now();
         let mut stream = match crate::vpx::VpxStream::new(
@@ -392,6 +412,11 @@ async fn stream_vpx(tx: mpsc::Sender<Vec<u8>>, cfg: std::sync::Arc<StreamCfg>) {
             let cur_tier = cfg.tier();
             let cur_scale = cfg.scale();
             let cur_fps = cfg.fps();
+            let cur_codec = cfg.codec();
+            if cur_codec != last_codec {
+                last_codec = cur_codec;
+                tracing::info!("codec switched to {}", CODEC_LABELS[cur_codec as usize]);
+            }
             if cur_screen != last_screen || cur_scale != last_scale || cur_fps != last_fps {
                 // 屏幕/分辨率/帧率变化 → 重建采集+编码器（帧率影响关键帧间隔 10×fps）
                 last_screen = cur_screen;
@@ -429,22 +454,72 @@ async fn stream_vpx(tx: mpsc::Sender<Vec<u8>>, cfg: std::sync::Arc<StreamCfg>) {
                     }
                 }
             }
+            // 编码器选择：强制 JPEG 直走 JPEG；自动模式 VP8 连续失败 5 次后进
+            // JPEG 冷却（15s 后自动重试 VP8）；强制 VP8 失败也不降级。
+            let force_jpeg = cur_codec == CODEC_JPEG;
+            let force_vp8 = cur_codec == CODEC_VP8;
+            let vpx_cooling = cur_codec == CODEC_AUTO && vpx_errs >= 5;
+            let want_vp8 = !force_jpeg && !vpx_cooling;
+            if want_vp8 {
+                if let Some(st) = stream.as_mut() {
+                    let cap_ts = now_ms();
+                    match st.encode_one() {
+                        Ok(Some(f)) => {
+                            vpx_errs = 0;
+                            // 帧 framing：[type=2 vp8][key][len u32 LE][capture_ts u64 LE][data]
+                            let mut msg = vec![2u8, f.key as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                            let n = f.data.len() as u32;
+                            msg[2..6].copy_from_slice(&n.to_le_bytes());
+                            msg[6..14].copy_from_slice(&cap_ts.to_le_bytes());
+                            msg.extend_from_slice(&f.data);
+                            if tx.blocking_send(msg).is_err() {
+                                return;
+                            }
+                            let fps = cfg.fps();
+                            let interval = if fps >= 30 { 1 } else { 1000 / fps.max(1) };
+                            std::thread::sleep(std::time::Duration::from_millis(interval.max(1)));
+                            continue;
+                        }
+                        Ok(None) => {
+                            std::thread::sleep(std::time::Duration::from_millis(15));
+                            continue;
+                        }
+                        Err(e) => {
+                            vpx_errs += 1;
+                            tracing::error!("vpx encode failed ({vpx_errs}): {e:#}");
+                            if force_vp8 {
+                                // 强制 VP8：不降级，短暂退避后重试
+                                std::thread::sleep(std::time::Duration::from_millis(200));
+                                continue;
+                            }
+                            if vpx_errs < 5 {
+                                std::thread::sleep(std::time::Duration::from_millis(200));
+                                continue;
+                            }
+                            // 自动模式：连续失败 → 进入 JPEG 冷却（下面走 JPEG 分支）
+                            tracing::error!("vpx disabled, falling back to jpeg");
+                            last_retry = std::time::Instant::now();
+                            continue;
+                        }
+                    }
+                }
+            }
+            // JPEG 路径：优先用与 VP8 同一个 scrap 采集源（与 VP8 同源同屏），
+            // 拿不到再用 xcap 兜底。
             if let Some(st) = stream.as_mut() {
-                let cap_ts = now_ms();
-                match st.encode_one() {
-                    Ok(Some(f)) => {
-                        vpx_errs = 0;
-                        // 帧 framing：[type=2 vp8][key][len u32 LE][capture_ts u64 LE][data]
-                        let mut msg = vec![2u8, f.key as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-                        let n = f.data.len() as u32;
+                match st.encode_one_jpeg(crate::capture::tier_jpeg_quality(cur_tier)) {
+                    Ok(Some(jpeg)) => {
+                        let cap_ts = now_ms();
+                        let mut msg = vec![1u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                        let n = jpeg.len() as u32;
                         msg[2..6].copy_from_slice(&n.to_le_bytes());
                         msg[6..14].copy_from_slice(&cap_ts.to_le_bytes());
-                        msg.extend_from_slice(&f.data);
+                        msg.extend_from_slice(&jpeg);
                         if tx.blocking_send(msg).is_err() {
                             return;
                         }
                         let fps = cfg.fps();
-                        let interval = if fps >= 30 { 1 } else { 1000 / fps.max(1) };
+                        let interval = if fps >= 30 { 33 } else { 1000 / fps.max(1) };
                         std::thread::sleep(std::time::Duration::from_millis(interval.max(1)));
                         continue;
                     }
@@ -453,18 +528,11 @@ async fn stream_vpx(tx: mpsc::Sender<Vec<u8>>, cfg: std::sync::Arc<StreamCfg>) {
                         continue;
                     }
                     Err(e) => {
-                        vpx_errs += 1;
-                        tracing::error!("vpx encode failed ({vpx_errs}): {e:#}");
-                        if vpx_errs >= 5 {
-                            tracing::error!("vpx disabled, falling back to jpeg");
-                            stream = None;
-                        } else {
-                            std::thread::sleep(std::time::Duration::from_millis(200));
-                        }
+                        tracing::warn!("jpeg encode failed: {e:#}");
                     }
                 }
             }
-            // JPEG 回退态：定期重试 VP8，恢复后自动切回（自愈）
+            // 没有可用采集源 → 定期重建（VP8/JPEG 都能用上）
             if stream.is_none() && last_retry.elapsed() >= std::time::Duration::from_secs(15) {
                 last_retry = std::time::Instant::now();
                 match crate::vpx::VpxStream::new(
@@ -472,17 +540,17 @@ async fn stream_vpx(tx: mpsc::Sender<Vec<u8>>, cfg: std::sync::Arc<StreamCfg>) {
                     crate::vpx::tier_kbps(cfg.tier()),
                     cfg.scale(),
                     cfg.fps(),
-                )
-                {
+                ) {
                     Ok(s) => {
-                        tracing::info!("vpx recovered, switching back from jpeg");
+                        tracing::info!("capture source recovered");
                         stream = Some(s);
+                        vpx_errs = 0;
                         continue;
                     }
-                    Err(e) => tracing::warn!("vpx retry failed: {e:#}"),
+                    Err(e) => tracing::warn!("capture source retry failed: {e:#}"),
                 }
             }
-            // JPEG 回退路径（跟随 tier/scale 热调）
+            // xcap JPEG 兜底（跟随 tier/scale 热调）
             let tier = cfg.tier();
             let scale = cfg.scale();
             let fps = cfg.fps();

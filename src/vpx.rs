@@ -265,4 +265,60 @@ impl VpxStream {
         }
         Ok(None)
     }
+
+    /// 用同一个采集源（scrap）抓一帧并编码成 JPEG。
+    ///
+    /// 与 VP8 同源：同一个 capturer、同一块屏幕、同一套分辨率缩放。
+    /// 无人值守机的会话 X 上 xcap 枚举不到 monitor（RandR 空）→ xcap 抓不到画面，
+    /// 但 scrap 的根窗口兜底能抓到会话根窗口 → JPEG 走 scrap 才有画面。
+    /// 无新帧时返回 Ok(None)。
+    pub fn encode_one_jpeg(&mut self, quality: u8) -> Result<Option<Vec<u8>>> {
+        let frame = match self.capturer.frame(std::time::Duration::from_millis(50)) {
+            Ok(f) => f,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    self.no_output_since = std::time::Instant::now();
+                    return Ok(None);
+                }
+                return Err(e).context("capture frame (jpeg)");
+            }
+        };
+        let (sw, sh, pixfmt) = match &frame {
+            Frame::PixelBuffer(pb) => (pb.width(), pb.height(), pb.pixfmt()),
+            _ => anyhow::bail!("unsupported frame type (need PixelBuffer)"),
+        };
+        // 原始像素 → RGBA（BGRA 需要交换 R/B）
+        let raw = match &frame {
+            Frame::PixelBuffer(pb) => pb.data(),
+            _ => unreachable!(),
+        };
+        let need = sw * sh * 4;
+        if raw.len() < need {
+            anyhow::bail!("pixel buffer too small: {} < {}", raw.len(), need);
+        }
+        let mut buf = raw[..need].to_vec();
+        if pixfmt == scrap::Pixfmt::BGRA {
+            for px in buf.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+        } else if pixfmt != scrap::Pixfmt::RGBA {
+            anyhow::bail!("unsupported pixfmt for jpeg: {pixfmt:?}");
+        }
+        let src = image::RgbaImage::from_raw(sw as u32, sh as u32, buf).context("wrap rgba")?;
+        let (w, h) = scaled_dims(sw, sh, self.scale);
+        self.width = w;
+        self.height = h;
+        let img = if (sw, sh) == (w, h) {
+            src
+        } else {
+            image::imageops::resize(
+                &src,
+                w as u32,
+                h as u32,
+                image::imageops::FilterType::Triangle,
+            )
+        };
+        self.no_output_since = std::time::Instant::now();
+        Ok(Some(crate::capture::encode_jpeg(&img, quality)?))
+    }
 }

@@ -39,13 +39,24 @@ pub fn warn_throttled(key: &str, msg: &str) {
 /// scrap 的 X11 后端会在首次调用时建立 XCB 连接并可能缓存，之后再改 DISPLAY
 /// 不一定生效（连接已经指向旧 display）。所以这里必须在进程启动阶段就把
 /// DISPLAY 定下来：
-///   1. DISPLAY 缺失 → 探测 /tmp/.X11-unix 补上；
-///   2. 有运行中的 Xvfb 虚拟屏 → 直接用它（无人值守机的会话 X 常无活动显示器）；
-///   3. 否则看真实活动显示器（xcap 枚举），有就用当前 DISPLAY；
-///   4. 都没有 → 新起一个 Xvfb 虚拟屏。
+///   1. DISPLAY 缺失 → 探测 /tmp/.X11-unix 补上（优先真实会话屏，再退 Xvfb）；
+///   2. 当前 DISPLAY 指向的 X server 还活着 → 就用它。
+///      无人值守机的会话 X 往往所有输出口都 disconnected（RandR 枚举不到
+///      monitor），但会话根窗口里有桌面内容 —— scrap 的根窗口兜底能抓到它；
+///   3. 当前 display 连不上 → 才退到 Xvfb 虚拟屏。
+///
+/// 注意：早期版本这里会优先复用「运行中的 Xvfb」，结果无人值守机上抓到的是
+/// 一个空虚拟屏（纯黑），而真正的桌面在会话 X 的根窗口里。
 #[cfg(target_os = "linux")]
 pub fn prepare_display_for_capture() {
     ensure_display();
+    if current_display_reachable() {
+        tracing::info!(
+            "capture display ready: {} (session root window)",
+            std::env::var("DISPLAY").unwrap_or_default()
+        );
+        return;
+    }
     if ensure_virtual_display() {
         tracing::info!(
             "capture display ready: {}",
@@ -56,6 +67,24 @@ pub fn prepare_display_for_capture() {
 
 #[cfg(not(target_os = "linux"))]
 pub fn prepare_display_for_capture() {}
+
+/// 当前 DISPLAY 指向的 X server 是否还活着（socket 存在即认为可达）。
+#[cfg(target_os = "linux")]
+pub fn current_display_reachable() -> bool {
+    let Some(num) = current_display_number() else {
+        return false;
+    };
+    std::path::Path::new(&format!("/tmp/.X11-unix/X{num}")).exists()
+}
+
+/// 解析 DISPLAY 里的 display 号（":0" / ":0.0" / "host:0.0" → 0）。
+#[cfg(target_os = "linux")]
+fn current_display_number() -> Option<u32> {
+    let disp = std::env::var("DISPLAY").ok()?;
+    let tail = disp.rsplit(':').next()?;
+    let num = tail.split('.').next()?;
+    num.parse::<u32>().ok()
+}
 
 /// 补齐 DISPLAY（仅 Linux 有意义；其他平台直接返回）。
 ///
@@ -69,49 +98,92 @@ pub fn ensure_display() {
         if std::env::var_os("DISPLAY").is_some() {
             return;
         }
-        // 优先复用已经在跑的 Xvfb 虚拟屏：无人值守机的会话 X（:0）通常一个活动
-        // 显示器都没有，采集不到画面；虚拟屏才是真正能出画面的那个。
+        // 优先真实会话屏（:0 之类）：无人值守机的会话 X 虽然没有活动显示器，
+        // 但根窗口里是有桌面内容的，scrap 的根窗口兜底能抓到。
+        // 只有在没有真实会话屏时才退到 Xvfb。
+        let socks = list_x_sockets();
+        if let Some(num) = socks.iter().copied().find(|n| !display_is_xvfb(*n)) {
+            let d = format!(":{num}");
+            std::env::set_var("DISPLAY", &d);
+            tracing::info!("DISPLAY was unset, detected session display {d}");
+            return;
+        }
         if let Some(d) = find_running_xvfb_display() {
             std::env::set_var("DISPLAY", &d);
             tracing::info!("DISPLAY was unset, reusing running Xvfb display {d}");
             return;
         }
-        let mut found: Option<String> = None;
-        if let Ok(rd) = std::fs::read_dir("/tmp/.X11-unix") {
-            let mut socks: Vec<String> = rd
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .filter(|n| n.starts_with('X') && n.len() > 1)
-                .collect();
-            socks.sort();
-            for s in socks {
-                if let Some(num) = s.strip_prefix('X') {
-                    if num.chars().all(|c| c.is_ascii_digit()) {
-                        found = Some(format!(":{num}"));
-                        break;
-                    }
-                }
-            }
+        if let Some(num) = socks.first().copied() {
+            let d = format!(":{num}");
+            std::env::set_var("DISPLAY", &d);
+            tracing::info!("DISPLAY was unset, detected {d} from /tmp/.X11-unix");
+            return;
         }
-        match found {
-            Some(d) => {
-                std::env::set_var("DISPLAY", &d);
-                tracing::info!("DISPLAY was unset, detected {d} from /tmp/.X11-unix");
-            }
-            None => {
-                tracing::warn!("DISPLAY unset and no X11 socket found in /tmp/.X11-unix");
-            }
-        }
+        tracing::warn!("DISPLAY unset and no X11 socket found in /tmp/.X11-unix");
     });
 }
 
 #[cfg(not(target_os = "linux"))]
 pub fn ensure_display() {}
 
+/// /tmp/.X11-unix 里的 display 号（升序）。
+#[cfg(target_os = "linux")]
+fn list_x_sockets() -> Vec<u32> {
+    let mut nums: Vec<u32> = match std::fs::read_dir("/tmp/.X11-unix") {
+        Ok(rd) => rd
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let num = name.strip_prefix('X')?;
+                if num.chars().all(|c| c.is_ascii_digit()) {
+                    num.parse::<u32>().ok()
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    nums.sort_unstable();
+    nums
+}
+
+/// 某个 display 号背后是不是 Xvfb（扫 /proc 找 Xvfb 进程的 display 参数）。
+#[cfg(target_os = "linux")]
+fn display_is_xvfb(num: u32) -> bool {
+    let want = format!(":{num}");
+    let mut entries: Vec<_> = match std::fs::read_dir("/proc") {
+        Ok(rd) => rd.flatten().collect(),
+        Err(_) => return false,
+    };
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let raw = match std::fs::read(format!("/proc/{name}/cmdline")) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let text = String::from_utf8_lossy(&raw).replace('\0', " ");
+        if !text.contains("Xvfb") {
+            continue;
+        }
+        for tok in text.split_whitespace() {
+            if tok == want {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// 无人值守机器常见「X server 在跑、但一个活动显示器都没有」的情况：
-/// 所有输出口都是 disconnected → xcap/scrap 枚举不到 monitor → 抓不到画面。
-/// 这时用 Xvfb 起一个虚拟屏并把 DISPLAY 指过去（需要系统装有 Xvfb）。
-/// 返回 true 表示已经（或已经能）用上虚拟屏。
+/// 所有输出口都是 disconnected → xcap/scrap 枚举不到 monitor。
+/// 现在 scrap 有根窗口兜底，能抓到会话根窗口里的桌面；
+/// 但如果当前 display 根本连不上，还是得用 Xvfb 起一个虚拟屏。
+/// 返回 true 表示当前 DISPLAY 可用（会话屏或虚拟屏）。
 #[cfg(target_os = "linux")]
 pub fn ensure_virtual_display() -> bool {
     use std::sync::{Mutex, OnceLock};
@@ -130,8 +202,15 @@ pub fn ensure_virtual_display() -> bool {
     if std::env::var_os("NPA_NO_XVFB").is_some() {
         return false;
     }
+    // 当前 display 还活着 → 就用它。无人值守机的会话 X 没有活动显示器，
+    // 但根窗口里有桌面内容（scrap 根窗口兜底），比切到空虚拟屏强。
+    if current_display_reachable() {
+        let d = std::env::var("DISPLAY").unwrap_or_default();
+        tracing::info!("reusing current display {d}");
+        *guard = Some(d);
+        return true;
+    }
     // 已经在跑 Xvfb 虚拟屏：直接用它（当前 DISPLAY 不是它就切过去）。
-    // 无人值守机的会话 X（:0）虽然存在，但一个活动显示器都没有 → 采集到的是黑屏。
     if let Some(d) = find_running_xvfb_display() {
         if std::env::var("DISPLAY").ok().as_deref() != Some(d.as_str()) {
             std::env::set_var("DISPLAY", &d);
@@ -185,7 +264,7 @@ pub fn ensure_virtual_display() -> bool {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     std::env::set_var("DISPLAY", &disp);
-    tracing::info!("no active display — started virtual screen via {xvfb} on {disp}");
+    tracing::info!("no reachable display — started virtual screen via {xvfb} on {disp}");
     *guard = Some(disp);
     true
 }

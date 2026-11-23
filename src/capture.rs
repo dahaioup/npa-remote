@@ -68,6 +68,25 @@ pub fn screen_list() -> Vec<(usize, u32, u32)> {
                 .collect();
         }
     }
+    // Linux 兜底：xcap 依赖 RandR 的 monitor 枚举，无人值守机的会话 X 上所有
+    // 输出口 disconnected → 枚举为空；但 scrap 的根窗口兜底能抓到真实桌面，
+    // 用它来报屏幕尺寸（前端下拉/坐标映射要用）。
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(ds) = scrap::Display::all() {
+            let list: Vec<(usize, u32, u32)> = ds
+                .iter()
+                .enumerate()
+                .map(|(i, d)| {
+                    let r = d.rect();
+                    (i, r.w as u32, r.h as u32)
+                })
+                .collect();
+            if !list.is_empty() {
+                return list;
+            }
+        }
+    }
     Vec::new()
 }
 

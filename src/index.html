@@ -27,6 +27,7 @@ fetch('/api/info').then(r=>r.json()).then(d=>{
   <label>画质 <select id="quality"><option value="0">极简 32K</option><option value="1">省流 128K</option><option value="2">标清 512K</option><option value="3" selected>流畅 1M</option><option value="4">清晰 2M</option><option value="5">高清 8M</option><option value="6">超清 16M</option></select></label>
   <label>分辨率 <select id="scale"><option value="100" selected>100%</option><option value="90">90%</option><option value="70">70%</option><option value="50">50%</option></select></label>
   <label>帧率 <select id="fps"><option>1</option><option>5</option><option selected>10</option><option>20</option><option>30</option></select></label>
+  <label>编码 <select id="codec" title="自动=VP8 优先，失败降级 JPEG"><option value="0" selected>自动</option><option value="1">VP8</option><option value="2">JPEG</option></select></label>
   <input id="text" placeholder="输入文字回车发送" size="28">
   <input id="combo" placeholder="组合键 如 ctrl+v" size="12">
   <button id="btnClipSet">复制选中→剪贴板</button>
@@ -109,6 +110,7 @@ function connect(){
     send({t:'quality',v:+document.getElementById('quality').value});
     send({t:'scale',v:+document.getElementById('scale').value});
     send({t:'fps',v:+document.getElementById('fps').value});
+    send({t:'codec',v:+document.getElementById('codec').value});
     send({t:'screen',id:+document.getElementById('screenSel').value});
   };
   ws.onclose = ()=> { meta.conn='断开，2s 后重连'; renderStatus(); setTimeout(connect,2000); };
@@ -197,6 +199,7 @@ document.getElementById('screenSel').onchange = e=>{
   renderStatus();
 };
 document.getElementById('fps').onchange = e=> send({t:'fps',v:+e.target.value});
+document.getElementById('codec').onchange = e=> send({t:'codec',v:+e.target.value});
 document.getElementById('text').onkeydown = e=>{
   if(e.key==='Enter'){ const t=e.target.value; e.target.value=''; send({t:'type',text:t}); }
   e.stopPropagation();

@@ -116,19 +116,20 @@ pub fn ensure_display() {
             tracing::warn!("DISPLAY={cur} is not reachable, probing other X servers");
             std::env::remove_var("DISPLAY");
         }
-        // 优先真实会话屏（:0 之类），其次运行中的 Xvfb；两者都要先探活，
-        // 陈旧 socket 一律跳过。
+        // DISPLAY 没设时：先找正在跑的 Xvfb 虚拟屏（无人值守机/容器里的
+        // 常规配置，往往这就是唯一能连上的 X server），再退到真实会话屏。
+        // 两种候选都要先探活——机器上常留着没人监听的陈旧 socket。
         let socks = list_x_sockets();
         let alive: Vec<u32> = socks.into_iter().filter(|n| x_socket_alive(*n)).collect();
+        if let Some(d) = find_running_xvfb_display() {
+            std::env::set_var("DISPLAY", &d);
+            tracing::info!("DISPLAY was unset, reusing running Xvfb display {d}");
+            return;
+        }
         if let Some(num) = alive.iter().copied().find(|n| !display_is_xvfb(*n)) {
             let d = format!(":{num}");
             std::env::set_var("DISPLAY", &d);
             tracing::info!("DISPLAY was unset, detected live session display {d}");
-            return;
-        }
-        if let Some(d) = find_running_xvfb_display() {
-            std::env::set_var("DISPLAY", &d);
-            tracing::info!("DISPLAY was unset, reusing running Xvfb display {d}");
             return;
         }
         if let Some(num) = alive.first().copied() {

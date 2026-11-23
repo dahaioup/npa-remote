@@ -77,10 +77,7 @@ pub fn screen_list() -> Vec<(usize, u32, u32)> {
             let list: Vec<(usize, u32, u32)> = ds
                 .iter()
                 .enumerate()
-                .map(|(i, d)| {
-                    let r = d.rect();
-                    (i, r.w as u32, r.h as u32)
-                })
+                .map(|(i, d)| (i, d.width() as u32, d.height() as u32))
                 .collect();
             if !list.is_empty() {
                 return list;

@@ -15,7 +15,22 @@ extern "system" {
     fn SendInput(c_inputs: u32, p_inputs: *const Input, cb_size: i32) -> u32;
     fn MapVirtualKeyW(u_code: u32, u_map_type: u32) -> u16;
     fn GetSystemMetrics(n_index: i32) -> i32;
+    // 桌面切换：登录界面（Winlogon 桌面）不属于当前用户桌面，SendInput 打不到。
+    fn GetForegroundWindow() -> isize;
+    fn GetWindowThreadProcessId(hwnd: isize, lpdwprocessid: *mut u32) -> u32;
+    fn GetThreadDesktop(thread_id: u32) -> isize;
+    fn SetThreadDesktop(h_desktop: isize) -> i32;
+    fn OpenDesktopW(lpszdesktop: *const u16, dwflags: u32, dwdesiredaccess: u32) -> isize;
+    fn CloseDesktop(h_desktop: isize) -> i32;
 }
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetCurrentThreadId() -> u32;
+}
+
+const DESKTOP_READWRITE_OBJECTS: u32 = 0x0001;
+const DESKTOP_SWITCHDESKTOP: u32 = 0x0100;
 
 const INPUT_MOUSE: u32 = 0;
 const INPUT_KEYBOARD: u32 = 1;
@@ -136,6 +151,9 @@ impl Input {
 }
 
 fn send(inputs: &[Input]) -> Result<()> {
+    // 登录界面（Winlogon 桌面）在别的 desktop 上，SendInput 只作用于当前线程的桌面，
+    // 所以先切到前台窗口所在的桌面，注入完再切回来。
+    let _guard = DesktopGuard::enter_foreground_desktop();
     let n = unsafe {
         SendInput(
             inputs.len() as u32,
@@ -150,6 +168,76 @@ fn send(inputs: &[Input]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// 桌面切换守卫：注入期间临时切到前台窗口所在桌面（登录界面用），离开时切回。
+pub struct DesktopGuard {
+    prev: Option<isize>,
+    opened: Option<isize>,
+}
+
+impl DesktopGuard {
+    /// 若前台窗口位于别的桌面则切过去；失败（无 DESKTOP_SWITCHDESKTOP 权限）则保持原桌面。
+    pub fn enter_foreground_desktop() -> Self {
+        let mut guard = DesktopGuard {
+            prev: None,
+            opened: None,
+        };
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd == 0 {
+                return guard;
+            }
+            let tid = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+            let target = GetThreadDesktop(tid);
+            let current = GetThreadDesktop(GetCurrentThreadId());
+            if target == 0 || current == 0 || target == current {
+                return guard;
+            }
+            if SetThreadDesktop(target) == 0 {
+                return guard;
+            }
+            guard.prev = Some(current);
+            guard
+        }
+    }
+}
+
+impl Drop for DesktopGuard {
+    fn drop(&mut self) {
+        if let Some(prev) = self.prev {
+            unsafe {
+                SetThreadDesktop(prev);
+            }
+        }
+        if let Some(h) = self.opened {
+            unsafe {
+                CloseDesktop(h);
+            }
+        }
+    }
+}
+
+/// 打开 Winlogon 桌面（Windows 登录/锁屏界面所在的桌面）。
+///
+/// 只有以 SYSTEM 身份运行的服务进程才有权限切换过去 —— 因此操作开机登录界面
+/// 要求 NPA 以 Windows 服务方式运行（session 0），这也是 Synergy/RustDesk 的做法。
+pub fn open_logon_desktop() -> Result<isize> {
+    let name: Vec<u16> = "Winlogon".encode_utf16().chain(std::iter::once(0)).collect();
+    let h = unsafe {
+        OpenDesktopW(
+            name.as_ptr(),
+            0,
+            DESKTOP_READWRITE_OBJECTS | DESKTOP_SWITCHDESKTOP,
+        )
+    };
+    if h == 0 {
+        bail!(
+            "OpenDesktopW(Winlogon) failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(h)
 }
 
 /// 按下/抬起一个虚拟键（带扫描码，IME 能正确组词）。

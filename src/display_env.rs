@@ -51,6 +51,7 @@ pub fn warn_throttled(key: &str, msg: &str) {
 pub fn prepare_display_for_capture() {
     ensure_display();
     if current_display_reachable() {
+        ensure_x_access();
         tracing::info!(
             "capture display ready: {} (session root window)",
             std::env::var("DISPLAY").unwrap_or_default()
@@ -87,6 +88,81 @@ pub fn current_display_reachable() -> bool {
 fn x_socket_alive(num: u32) -> bool {
     use std::os::unix::net::UnixStream;
     UnixStream::connect(format!("/tmp/.X11-unix/X{num}")).is_ok()
+}
+
+/// 会话 X 可能属于另一个用户（桌面会话通常属于普通用户，插件却常以 root 跑）。
+///
+/// X server 的访问控制默认只放行会话所有者，其他本地用户连上去会被拒，
+/// xlib 只能报 "No protocol specified" —— 采集链路于是静默失败（表现为黑屏）。
+/// 这里用该 display 的属主身份执行一次 `xhost +SI:localuser:root`，
+/// 把 root 加进访问名单；会话重启后授权会失效，插件每次启动都会重新补一次。
+#[cfg(target_os = "linux")]
+pub fn ensure_x_access() {
+    let Some(num) = current_display_number() else {
+        return;
+    };
+    let Some(uid) = socket_owner_uid(num) else {
+        return;
+    };
+    if uid == 0 {
+        return; // 自己就是属主
+    }
+    if !running_as_root() {
+        return; // 没 root 就没法改别人的 X 访问名单
+    }
+    let Some(user) = uid_to_name(uid) else {
+        return;
+    };
+    let cmd = format!("su - {user} -c 'DISPLAY=:{num} xhost +SI:localuser:root'");
+    let out = match std::process::Command::new("sh").arg("-c").arg(&cmd).output() {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!("xhost: granting root access to :{num} error: {e}");
+            return;
+        }
+    };
+    if out.status.success() {
+        tracing::info!("xhost: granted root access to display :{num} (owner {user})");
+    } else {
+        tracing::warn!(
+            "xhost: granting root access to :{num} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+}
+
+/// /tmp/.X11-unix/X<n> 这个 socket 的属主 uid。
+#[cfg(target_os = "linux")]
+fn socket_owner_uid(num: u32) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(format!("/tmp/.X11-unix/X{num}"))
+        .ok()
+        .map(|m| m.uid())
+}
+
+/// uid → 用户名（读 /etc/passwd）。
+#[cfg(target_os = "linux")]
+fn uid_to_name(uid: u32) -> Option<String> {
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    for line in passwd.lines() {
+        let mut f = line.split(':');
+        let name = f.next()?;
+        let _pw = f.next()?;
+        let uid_field = f.next()?;
+        if uid_field.parse::<u32>().ok() == Some(uid) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// 当前进程是否以 root 运行（读 /proc/self，避免引入 libc 依赖）。
+#[cfg(target_os = "linux")]
+fn running_as_root() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self")
+        .map(|m| m.uid() == 0)
+        .unwrap_or(false)
 }
 
 /// 解析 DISPLAY 里的 display 号（":0" / ":0.0" / "host:0.0" → 0）。
@@ -224,6 +300,7 @@ pub fn ensure_virtual_display() -> bool {
     // 当前 display 还活着 → 就用它。无人值守机的会话 X 没有活动显示器，
     // 但根窗口里有桌面内容（scrap 根窗口兜底），比切到空虚拟屏强。
     if current_display_reachable() {
+        ensure_x_access();
         let d = std::env::var("DISPLAY").unwrap_or_default();
         tracing::info!("reusing current display {d}");
         *guard = Some(d);

@@ -21,9 +21,9 @@ const UI_SET_EVBIT: libc::c_ulong = 0x4004_5564; // _IOW('U', 100, int)
 const UI_SET_KEYBIT: libc::c_ulong = 0x4004_5565; // _IOW('U', 101, int)
 const UI_SET_RELBIT: libc::c_ulong = 0x4004_5566; // _IOW('U', 102, int)
 const UI_SET_PHYS: libc::c_ulong = 0x4008_5508; // _IOW('U', 108, char*)
-const UI_ABS_SETUP: libc::c_ulong = 0x4004_5540; // _IOW('U', 0x40 + abs_code, int) —— ABS_X=0
-const UI_SET_ABSMIN: libc::c_ulong = 0x4004_5523; // _IOW('U', 0x23, int)
-const UI_SET_ABSMAX: libc::c_ulong = 0x4004_5524; // _IOW('U', 0x24, int)
+const UI_SET_ABSBIT: libc::c_ulong = 0x4004_5567; // _IOW('U', 103, int) —— 参数是轴码本身
+const UI_SET_PROPBIT: libc::c_ulong = 0x4004_556f; // _IOW('U', 111, int)
+const UI_ABS_SETUP: libc::c_ulong = 0x4018_5504; // _IOW('U', 4, struct uinput_abs_setup) size=24
 const UI_DEV_SETUP: libc::c_ulong = 0x405C_5503; // _IOW('U', 3, struct uinput_setup) size=92
 
 // 事件类型
@@ -37,6 +37,25 @@ const ABS_Y: u16 = 0x01;
 
 /// 绝对坐标轴的取值范围（与 ydotool 一致）。
 const ABS_MAX: i32 = 32767;
+
+/// INPUT_PROP_POINTER：告诉 libinput 这是「指针设备」而不是触摸板
+/// （触摸板会套用指针加速曲线，绝对坐标也会被缩放）。
+const INPUT_PROP_POINTER: libc::c_ulong = 0x00;
+/// INPUT_PROP_DIRECT：直接定位，不做加速/缩放。
+const INPUT_PROP_DIRECT: libc::c_ulong = 0x01;
+
+/// struct uinput_abs_setup（内核头 uinput.h）：
+/// __u16 code; __s32 minimum; __s32 maximum; __s32 fuzz; __s32 flat; __s32 resolution;
+/// —— repr(C) 下 code 后补 2 字节，总长 24 字节。
+#[repr(C)]
+struct AbsSetup {
+    code: u16,
+    minimum: i32,
+    maximum: i32,
+    fuzz: i32,
+    flat: i32,
+    resolution: i32,
+}
 
 const SYN_REPORT: i32 = 0;
 const REL_X: u16 = 0x00;
@@ -331,14 +350,36 @@ fn create_device() -> Result<Device> {
     for ev in [EV_SYN, EV_KEY, EV_REL, EV_ABS] {
         ioctl_set(fd, UI_SET_EVBIT, ev as libc::c_ulong)?;
     }
+    // 设备属性：声明成「指针」+「直接定位」，libinput 就不会对它套指针加速。
+    for prop in [INPUT_PROP_POINTER, INPUT_PROP_DIRECT] {
+        ioctl_set(fd, UI_SET_PROPBIT, prop)?;
+    }
     // 绝对坐标轴：绝对定位才能绕开 Wayland 合成器的指针加速（相对量会被缩放，
     // 远程光标就会飘）。只注册 ABS_X/ABS_Y 而不注册 REL_X/REL_Y，
     // libinput 才会把它当「绝对指针设备」而不是触摸板。
-    for (code, name) in [(ABS_X, "ABS_X"), (ABS_Y, "ABS_Y")] {
-        ioctl_set(fd, UI_ABS_SETUP + code as libc::c_ulong, code as libc::c_ulong)?;
-        ioctl_set(fd, UI_SET_ABSMIN, 0)?;
-        ioctl_set(fd, UI_SET_ABSMAX, ABS_MAX as libc::c_ulong)?;
-        let _ = name;
+    for code in [ABS_X, ABS_Y] {
+        ioctl_set(fd, UI_SET_ABSBIT, code as libc::c_ulong)?;
+        let setup = AbsSetup {
+            code,
+            minimum: 0,
+            maximum: ABS_MAX,
+            fuzz: 0,
+            flat: 0,
+            resolution: 0,
+        };
+        let rc = unsafe {
+            libc::ioctl(
+                fd,
+                UI_ABS_SETUP,
+                &setup as *const AbsSetup,
+            )
+        };
+        if rc < 0 {
+            bail!(
+                "uinput abs setup ioctl {UI_ABS_SETUP:#x} failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
     }
     // 鼠标键
     for b in [BTN_LEFT, BTN_RIGHT, BTN_MIDDLE] {

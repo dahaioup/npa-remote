@@ -47,6 +47,11 @@ enum Cmd {
     Plugin,
 }
 
+#[cfg(target_os = "windows")]
+fn log_desktop_context() {
+    tracing::info!("desktop context: {}", crate::wininput::desktop_context());
+}
+
 fn main() -> Result<()> {
     // 插件常被 NPA 的 sidecar 拉起，环境里可能没有 DISPLAY（systemd user 会话
     // 不导入 X11 变量）→ xcap / scrap 的 X11 后端会连不上显示器。先补上。
@@ -63,6 +68,7 @@ fn main() -> Result<()> {
         .init();
     match Cli::parse().cmd {
         Cmd::Serve { bind, port } => {
+            log_desktop_context();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(web::serve(&bind, port))
         }

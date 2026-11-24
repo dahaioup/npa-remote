@@ -27,6 +27,16 @@ extern "system" {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetCurrentThreadId() -> u32;
+    fn GetCurrentProcessId() -> u32;
+    fn ProcessIdToSessionId(process_id: u32, session_id: *mut u32) -> i32;
+    fn GetProcessWindowStation() -> isize;
+    fn GetUserObjectInformationW(
+        h_obj: isize,
+        index: u32,
+        pv_info: *mut u16,
+        n_length: u32,
+        lpdw_length_needed: *mut u32,
+    ) -> i32;
 }
 
 const DESKTOP_READWRITE_OBJECTS: u32 = 0x0001;
@@ -52,6 +62,7 @@ const MOUSEEVENTF_MIDDLEUP: u32 = 0x0040;
 const MOUSEEVENTF_WHEEL: u32 = 0x0800;
 
 const MAPVK_VK_TO_VSC: u32 = 0;
+const UOI_NAME: u32 = 2;
 const SM_CXSCREEN: i32 = 0;
 const SM_CYSCREEN: i32 = 1;
 
@@ -184,8 +195,10 @@ fn send(inputs: &[Input]) -> Result<()> {
     };
     if n as usize != inputs.len() {
         bail!(
-            "SendInput sent {n}/{} events",
-            inputs.len()
+            "SendInput sent {n}/{} events (winerr={} {})",
+            inputs.len(),
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+            desktop_context()
         );
     }
     Ok(())
@@ -462,4 +475,43 @@ pub fn mouse_button(button: &str, down: bool) -> Result<()> {
 /// 滚轮（正值向上，与现有约定一致）。
 pub fn mouse_wheel(delta: i32) -> Result<()> {
     send(&[Input::mouse(0, 0, delta as u32, MOUSEEVENTF_WHEEL)])
+}
+
+
+/// 当前进程的会话与桌面信息（诊断用）：窗口站名 / 桌面名 / 会话 ID。
+pub fn desktop_context() -> String {
+    let mut session: u32 = 0;
+    unsafe {
+        ProcessIdToSessionId(GetCurrentProcessId(), &mut session);
+    }
+    let mut winsta = String::new();
+    let mut desktop = String::new();
+    unsafe {
+        let ws = GetProcessWindowStation();
+        if ws != 0 {
+            let mut need: u32 = 0;
+            let mut buf = [0u16; 256];
+            if GetUserObjectInformationW(ws, UOI_NAME, buf.as_mut_ptr(), 512, &mut need) != 0 {
+                winsta = wide_to_string(&buf);
+            }
+            let cur = GetThreadDesktop(GetCurrentThreadId());
+            if cur != 0 {
+                let mut need2: u32 = 0;
+                let mut buf2 = [0u16; 256];
+                if GetUserObjectInformationW(cur, UOI_NAME, buf2.as_mut_ptr(), 512, &mut need2) != 0 {
+                    desktop = wide_to_string(&buf2);
+                }
+            }
+        }
+    }
+    format!("session={session} winsta={winsta} desktop={desktop}")
+}
+
+fn wide_to_string(buf: &[u16]) -> String {
+    let s: String = buf
+        .iter()
+        .take_while(|c| **c != 0)
+        .map(|c| char::from_u32(*c as u32).unwrap_or('?'))
+        .collect();
+    s
 }

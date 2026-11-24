@@ -457,8 +457,14 @@ fn win_press_code(code: &str, shift: bool) -> Result<()> {
     if shift {
         crate::wininput::send_vk(0x10, true)?;
     }
-    crate::wininput::send_vk(vk, true)?;
-    crate::wininput::send_vk(vk, false)?;
+    // 扫描码注入失败时退回 Unicode 注入：输入法不会组词，但字符至少能出来。
+    let injected = crate::wininput::send_vk(vk, true).and_then(|()| crate::wininput::send_vk(vk, false));
+    if let Err(e) = injected {
+        tracing::warn!("scancode inject failed, fallback to unicode: {e:#}");
+        if let Some(ch) = char::from_u32(vk as u32) {
+            crate::wininput::send_unicode(ch)?;
+        }
+    }
     if shift {
         crate::wininput::send_vk(0x10, false)?;
     }

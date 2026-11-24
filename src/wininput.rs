@@ -15,6 +15,7 @@ extern "system" {
     fn SendInput(c_inputs: u32, p_inputs: *const Input, cb_size: i32) -> u32;
     fn MapVirtualKeyW(u_code: u32, u_map_type: u32) -> u16;
     fn GetSystemMetrics(n_index: i32) -> i32;
+    fn GetCursorPos(lp_point: *mut CursorPoint) -> i32;
     // 桌面切换：登录界面（Winlogon 桌面）不属于当前用户桌面，SendInput 打不到。
     fn GetForegroundWindow() -> isize;
     fn GetWindowThreadProcessId(hwnd: isize, lpdwprocessid: *mut u32) -> u32;
@@ -22,6 +23,24 @@ extern "system" {
     fn SetThreadDesktop(h_desktop: isize) -> i32;
     fn OpenDesktopW(lpszdesktop: *const u16, dwflags: u32, dwdesiredaccess: u32) -> isize;
     fn CloseDesktop(h_desktop: isize) -> i32;
+}
+
+/// Windows POINT（GetCursorPos 用）。
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct CursorPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// 当前鼠标位置（屏幕像素）。
+pub fn cursor_pos() -> Result<(i32, i32)> {
+    let mut p = CursorPoint::default();
+    let ok = unsafe { GetCursorPos(&mut p) };
+    if ok == 0 {
+        bail!("GetCursorPos failed: {}", std::io::Error::last_os_error());
+    }
+    Ok((p.x, p.y))
 }
 
 #[link(name = "kernel32")]

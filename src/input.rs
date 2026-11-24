@@ -172,9 +172,9 @@ pub fn toggle_ime() -> Result<()> {
     let mut e = enigo()?;
     #[cfg(target_os = "windows")]
     {
-        e.key(enigo::Key::Meta, enigo::Direction::Press)?;
-        e.key(enigo::Key::Space, enigo::Direction::Click)?;
-        e.key(enigo::Key::Meta, enigo::Direction::Release)?;
+        // Win+Space 切换输入法（走 wininput 的 SendInput，与其它按键同一路径）
+        crate::wininput::send_combo(&[0x5B, 0x20])?;
+        return Ok(());
     }
     #[cfg(target_os = "macos")]
     {
@@ -321,6 +321,12 @@ pub fn mouse_move(x: i64, y: i64) -> Result<()> {
             sh,
         );
     }
+    // Windows：enigo 0.2 的 SendInput 路径不可靠（INPUT 结构尺寸不对 → winerr=87），
+    // 统一走 wininput 的 MOUSEEVENTF_ABSOLUTE|VIRTUALDESK（归一化 0..65535）。
+    #[cfg(target_os = "windows")]
+    {
+        return crate::wininput::mouse_move_abs(x as i32, y as i32);
+    }
     let mut e = enigo()?;
     e.move_mouse(x as i32, y as i32, enigo::Coordinate::Abs)?;
     Ok(())
@@ -331,6 +337,10 @@ pub fn mouse_down(button: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
     if uinput_ready() {
         return crate::uinput::button(button, crate::uinput::Action::Press);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return crate::wininput::mouse_button(button, true);
     }
     let btn = parse_button(button)?;
     let mut e = enigo()?;
@@ -343,6 +353,10 @@ pub fn mouse_up(button: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
     if uinput_ready() {
         return crate::uinput::button(button, crate::uinput::Action::Release);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return crate::wininput::mouse_button(button, false);
     }
     let btn = parse_button(button)?;
     let mut e = enigo()?;
@@ -368,6 +382,15 @@ pub fn mouse_click(button: &str, count: u32) -> Result<()> {
         }
         return Ok(());
     }
+    #[cfg(target_os = "windows")]
+    {
+        let n = count.clamp(1, 3);
+        for _ in 0..n {
+            crate::wininput::mouse_button(button, true)?;
+            crate::wininput::mouse_button(button, false)?;
+        }
+        return Ok(());
+    }
     let btn = parse_button(button)?;
     let n = count.clamp(1, 3);
     let mut e = enigo()?;
@@ -381,6 +404,10 @@ pub fn mouse_scroll(dy: i64) -> Result<()> {
     #[cfg(target_os = "linux")]
     if uinput_ready() {
         return crate::uinput::scroll(dy);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return crate::wininput::mouse_wheel(dy as i32);
     }
     let mut e = enigo()?;
     // 正值向上
@@ -411,6 +438,11 @@ pub fn clipboard_set(text: &str) -> Result<()> {
 /// 鼠标当前位置（经 enigo 内部 API 不可用，这里用 xcap 不可得；
 /// 各平台实现见 info.rs —— 骨架期 macOS/Win 用 enigo 的 cursor 轮询接口）。
 pub fn mouse_pos() -> Result<(i64, i64)> {
+    #[cfg(target_os = "windows")]
+    {
+        let (x, y) = crate::wininput::cursor_pos()?;
+        return Ok((x as i64, y as i64));
+    }
     let mut e = enigo()?;
     match e.location() {
         Ok((x, y)) => Ok((x as i64, y as i64)),

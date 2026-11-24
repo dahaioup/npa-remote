@@ -22,7 +22,7 @@ const UI_SET_KEYBIT: libc::c_ulong = 0x4004_5565; // _IOW('U', 101, int)
 const UI_SET_RELBIT: libc::c_ulong = 0x4004_5566; // _IOW('U', 102, int)
 const UI_SET_PHYS: libc::c_ulong = 0x4008_5508; // _IOW('U', 108, char*)
 const UI_SET_ABSBIT: libc::c_ulong = 0x4004_5567; // _IOW('U', 103, int) —— 参数是轴码本身
-const UI_SET_PROPBIT: libc::c_ulong = 0x4004_556f; // _IOW('U', 111, int)
+const UI_SET_PROPBIT: libc::c_ulong = 0x4004_556e; // _IOW('U', 110, int)
 const UI_ABS_SETUP: libc::c_ulong = 0x4018_5504; // _IOW('U', 4, struct uinput_abs_setup) size=24
 const UI_DEV_SETUP: libc::c_ulong = 0x405C_5503; // _IOW('U', 3, struct uinput_setup) size=92
 
@@ -351,8 +351,11 @@ fn create_device() -> Result<Device> {
         ioctl_set(fd, UI_SET_EVBIT, ev as libc::c_ulong)?;
     }
     // 设备属性：声明成「指针」+「直接定位」，libinput 就不会对它套指针加速。
+    // 老内核不支持这两个属性位 → 只提示不致命，别让整个设备建不起来。
     for prop in [INPUT_PROP_POINTER, INPUT_PROP_DIRECT] {
-        ioctl_set(fd, UI_SET_PROPBIT, prop)?;
+        if ioctl_set(fd, UI_SET_PROPBIT, prop).is_err() {
+            tracing::debug!("uinput: set prop {prop} unsupported (ignored)");
+        }
     }
     // 绝对坐标轴：绝对定位才能绕开 Wayland 合成器的指针加速（相对量会被缩放，
     // 远程光标就会飘）。只注册 ABS_X/ABS_Y 而不注册 REL_X/REL_Y，

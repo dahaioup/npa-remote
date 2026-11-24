@@ -23,7 +23,8 @@ const UI_SET_RELBIT: libc::c_ulong = 0x4004_5566; // _IOW('U', 102, int)
 const UI_SET_PHYS: libc::c_ulong = 0x4008_5508; // _IOW('U', 108, char*)
 const UI_SET_ABSBIT: libc::c_ulong = 0x4004_5567; // _IOW('U', 103, int) —— 参数是轴码本身
 const UI_SET_PROPBIT: libc::c_ulong = 0x4004_556e; // _IOW('U', 110, int)
-const UI_ABS_SETUP: libc::c_ulong = 0x4018_5504; // _IOW('U', 4, struct uinput_abs_setup) size=24
+const UI_ABS_SETUP: libc::c_ulong = 0x401c_5504; // _IOW('U', 4, struct uinput_abs_setup) size=28（新内核：内嵌 input_absinfo）
+const UI_ABS_SETUP_LEGACY: libc::c_ulong = 0x4018_5504; // 同上但用旧结构（6 个 s32 字段），size=24
 const UI_DEV_SETUP: libc::c_ulong = 0x405C_5503; // _IOW('U', 3, struct uinput_setup) size=92
 
 // 事件类型
@@ -44,11 +45,31 @@ const INPUT_PROP_POINTER: libc::c_ulong = 0x00;
 /// INPUT_PROP_DIRECT：直接定位，不做加速/缩放。
 const INPUT_PROP_DIRECT: libc::c_ulong = 0x01;
 
-/// struct uinput_abs_setup（内核头 uinput.h）：
-/// __u16 code; __s32 minimum; __s32 maximum; __s32 fuzz; __s32 flat; __s32 resolution;
-/// —— repr(C) 下 code 后补 2 字节，总长 24 字节。
+/// struct input_absinfo（内核头 input.h）：
+/// __s32 value; __s32 minimum; __s32 maximum; __s32 fuzz; __s32 flat; __s32 resolution;
+#[repr(C)]
+struct AbsInfo {
+    value: i32,
+    minimum: i32,
+    maximum: i32,
+    fuzz: i32,
+    flat: i32,
+    resolution: i32,
+}
+
+/// struct uinput_abs_setup（内核头 uinput.h，新内核）：
+/// __u16 code; struct input_absinfo absinfo;
+/// —— repr(C) 下 code 后补 2 字节，总长 28 字节；ioctl 号里的 size 位必须与之一致，
+/// 否则内核按「未知命令」返回 EINVAL。
 #[repr(C)]
 struct AbsSetup {
+    code: u16,
+    absinfo: AbsInfo,
+}
+
+/// 旧内核的 struct uinput_abs_setup：__u16 code; 5 个 __s32 —— 总长 24 字节。
+#[repr(C)]
+struct AbsSetupLegacy {
     code: u16,
     minimum: i32,
     maximum: i32,
@@ -362,13 +383,18 @@ fn create_device() -> Result<Device> {
     // libinput 才会把它当「绝对指针设备」而不是触摸板。
     for code in [ABS_X, ABS_Y] {
         ioctl_set(fd, UI_SET_ABSBIT, code as libc::c_ulong)?;
+        // 新旧内核的 uinput_abs_setup 结构不同（ioctl 号里的 size 位也不同），
+        // 两种都试一遍：内核不认这个命令号时返回 EINVAL。
         let setup = AbsSetup {
             code,
-            minimum: 0,
-            maximum: ABS_MAX,
-            fuzz: 0,
-            flat: 0,
-            resolution: 0,
+            absinfo: AbsInfo {
+                value: 0,
+                minimum: 0,
+                maximum: ABS_MAX,
+                fuzz: 0,
+                flat: 0,
+                resolution: 0,
+            },
         };
         let rc = unsafe {
             libc::ioctl(
@@ -377,9 +403,27 @@ fn create_device() -> Result<Device> {
                 &setup as *const AbsSetup,
             )
         };
-        if rc < 0 {
+        if rc == 0 {
+            continue;
+        }
+        let legacy = AbsSetupLegacy {
+            code,
+            minimum: 0,
+            maximum: ABS_MAX,
+            fuzz: 0,
+            flat: 0,
+            resolution: 0,
+        };
+        let rc2 = unsafe {
+            libc::ioctl(
+                fd,
+                UI_ABS_SETUP_LEGACY,
+                &legacy as *const AbsSetupLegacy,
+            )
+        };
+        if rc2 < 0 {
             bail!(
-                "uinput abs setup ioctl {UI_ABS_SETUP:#x} failed: {}",
+                "uinput abs setup failed (new {UI_ABS_SETUP:#x}, legacy {UI_ABS_SETUP_LEGACY:#x}): {}",
                 std::io::Error::last_os_error()
             );
         }

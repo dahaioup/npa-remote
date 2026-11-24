@@ -15,6 +15,8 @@ mod vpx;
 mod input;
 mod pluginrpc;
 mod web;
+#[cfg(target_os = "linux")]
+mod uinput;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

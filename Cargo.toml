@@ -33,6 +33,8 @@ base = { path = "third_party/rustdesk/libs/base" }
 # Linux：pkg-config 发现系统 libvpx/libyuv/libaom（apt 装的 -dev 包）
 scrap = { path = "third_party/rustdesk/libs/scrap", features = ["linux-pkg-config"] }
 base = { path = "third_party/rustdesk/libs/base" }
+# uinput 虚拟输入设备（Wayland 会话下 XTEST 无效，必须走内核级输入）
+libc = "0.2"
 
 # build.rs：macOS 编译 BackingScaleFactor 最小实现（scrap Display::scale 需要）
 [build-dependencies]

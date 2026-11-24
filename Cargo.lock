@@ -2798,6 +2798,7 @@ dependencies = [
  "clap 4.6.7",
  "enigo",
  "image",
+ "libc",
  "local-ip-address",
  "openssl-sys",
  "rcgen",

@@ -13,6 +13,10 @@ fn enigo() -> Result<Enigo> {
 /// 特殊控制字符映射：\r→Enter、\x08→Backspace、\t→Tab、\x1b→Escape、
 /// \x1b[A/B/C/D→方向键、\x1b[H/F→Home/End、\x1b[3~→Delete、\x1b[5~/6~→PgUp/PgDn、\x1b[2~→Insert。
 pub fn type_text(text: &str) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if crate::uinput::available() {
+        return type_text_uinput(text);
+    }
     let chars = text.chars().count();
     if chars == 0 || chars > MAX_TEXT {
         bail!("text length must be 1..={MAX_TEXT}");
@@ -67,10 +71,61 @@ pub fn type_text(text: &str) -> Result<()> {
     Ok(())
 }
 
+/// Wayland 会话下的文本输入（uinput 逐键）。
+///
+/// uinput 只能发物理键码，没有「输入任意 Unicode」的能力，
+/// 所以非 ASCII（中文）请走剪贴板 + 粘贴。
+#[cfg(target_os = "linux")]
+fn type_text_uinput(text: &str) -> Result<()> {
+    use crate::uinput;
+    let chars = text.chars().count();
+    if chars == 0 || chars > MAX_TEXT {
+        bail!("text length must be 1..={MAX_TEXT}");
+    }
+    for c in text.chars() {
+        match c {
+            '\r' | '\n' => {
+                uinput::key(uinput::KEY_ENTER, true)?;
+                uinput::key(uinput::KEY_ENTER, false)?;
+            }
+            '\t' => {
+                uinput::key(uinput::KEY_TAB, true)?;
+                uinput::key(uinput::KEY_TAB, false)?;
+            }
+            '\x08' => {
+                uinput::key(uinput::KEY_BACKSPACE, true)?;
+                uinput::key(uinput::KEY_BACKSPACE, false)?;
+            }
+            '\x1b' => {
+                uinput::key(uinput::KEY_ESC, true)?;
+                uinput::key(uinput::KEY_ESC, false)?;
+            }
+            _ => {
+                let Some((code, shift)) = uinput::ascii_key(c) else {
+                    bail!("Wayland 会话只能输入 ASCII；中文请用「复制选中→剪贴板」再 ctrl+v 粘贴");
+                };
+                if shift {
+                    uinput::key(uinput::KEY_LEFTSHIFT, true)?;
+                }
+                uinput::key(code, true)?;
+                uinput::key(code, false)?;
+                if shift {
+                    uinput::key(uinput::KEY_LEFTSHIFT, false)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 组合键："ctrl+v"、"cmd+shift+3"、"enter"。
 /// 修饰键名：ctrl/cmd/alt/shift/meta/win/super（大小写不敏感）。
 /// 单独按 Shift：切换目标设备输入法（Win+Space / mac 切换输入法快捷键）
 pub fn toggle_ime() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if crate::uinput::available() {
+        return crate::uinput::combo_names(&["super".to_string(), "space".to_string()]);
+    }
     let mut e = enigo()?;
     #[cfg(target_os = "windows")]
     {
@@ -103,6 +158,11 @@ pub fn hotkey(combo: &str) -> Result<()> {
         .collect();
     if parts.is_empty() || parts.len() > MAX_COMBO {
         bail!("combo must have 1..{MAX_COMBO} parts");
+    }
+    #[cfg(target_os = "linux")]
+    if crate::uinput::available() {
+        let names: Vec<String> = parts.iter().map(|s| s.to_string()).collect();
+        return crate::uinput::combo_names(&names);
     }
     let mut keys = Vec::new();
     for p in &parts {
@@ -175,7 +235,16 @@ fn parse_key(s: &str) -> Result<KeyOrMod> {
 }
 
 /// 鼠标：move/click/scroll。
+///
+/// Wayland 会话（KWin/Mutter）下 X11 XTEST 注入的事件不会进入合成器的输入
+/// 管线 —— enigo 在 Xwayland 上注入的鼠标事件被丢弃，表现为「画面能看到、
+/// 点不动」。所以 Linux 上优先走 uinput 虚拟输入设备（合成器当真实硬件读），
+/// 不可用时（例如非 root）再退回 enigo/XTEST。
 pub fn mouse_move(x: i64, y: i64) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if crate::uinput::available() {
+        return crate::uinput::move_to(x, y);
+    }
     let mut e = enigo()?;
     e.move_mouse(x as i32, y as i32, enigo::Coordinate::Abs)?;
     Ok(())
@@ -183,6 +252,10 @@ pub fn mouse_move(x: i64, y: i64) -> Result<()> {
 
 /// 鼠标按下（按住不放，配合 mouse_up 实现拖选/拖窗口）。
 pub fn mouse_down(button: &str) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if crate::uinput::available() {
+        return crate::uinput::button(button, crate::uinput::Action::Press);
+    }
     let btn = parse_button(button)?;
     let mut e = enigo()?;
     e.button(btn, enigo::Direction::Press)?;
@@ -191,6 +264,10 @@ pub fn mouse_down(button: &str) -> Result<()> {
 
 /// 鼠标抬起（结束按住）。
 pub fn mouse_up(button: &str) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if crate::uinput::available() {
+        return crate::uinput::button(button, crate::uinput::Action::Release);
+    }
     let btn = parse_button(button)?;
     let mut e = enigo()?;
     e.button(btn, enigo::Direction::Release)?;
@@ -207,6 +284,14 @@ fn parse_button(button: &str) -> Result<enigo::Button> {
 }
 
 pub fn mouse_click(button: &str, count: u32) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if crate::uinput::available() {
+        let n = count.clamp(1, 3);
+        for _ in 0..n {
+            crate::uinput::button(button, crate::uinput::Action::Click)?;
+        }
+        return Ok(());
+    }
     let btn = parse_button(button)?;
     let n = count.clamp(1, 3);
     let mut e = enigo()?;
@@ -217,6 +302,10 @@ pub fn mouse_click(button: &str, count: u32) -> Result<()> {
 }
 
 pub fn mouse_scroll(dy: i64) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if crate::uinput::available() {
+        return crate::uinput::scroll(dy);
+    }
     let mut e = enigo()?;
     // 正值向上
     e.scroll(dy as i32, enigo::Axis::Vertical)?;

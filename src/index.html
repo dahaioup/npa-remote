@@ -184,9 +184,11 @@ view.addEventListener('mouseup', e=>{
 });
 // mouseleave 兜底：拖出画布也要发 up，否则远端一直按住
 view.addEventListener('mouseleave', ()=>{ if(dragging){ dragging=false; send({t:'up',x:-1,y:-1,button:'left'}); } });
-view.addEventListener('click', e=>{ const p=toScreen(e); if(p) send({t:'click',x:p.x,y:p.y,button:'left'}); });
-view.addEventListener('contextmenu', e=>{ e.preventDefault(); const p=toScreen(e); if(p) send({t:'click',x:p.x,y:p.y,button:'right'}); });
-view.addEventListener('dblclick', e=>{ const p=toScreen(e); if(p) send({t:'click',x:p.x,y:p.y,button:'left',count:2}); });
+// 注意：mousedown/mouseup 已经构成一次完整点击（按下+抬起 = 远端收到一个 click），
+// 这里不能再额外发 click —— 否则远端会收到两次点击，被识别成双击。
+// 右键同理：contextmenu 只用来挡掉浏览器自带菜单，点击已由 down/up 完成。
+// 双击也不需要单独处理：两次 down/up 组合就是双击。
+view.addEventListener('contextmenu', e=>{ e.preventDefault(); });
 view.addEventListener('wheel', e=>{ e.preventDefault(); const p=toScreen(e); if(p) send({t:'scroll',dy:Math.sign(e.deltaY)*120,x:p.x,y:p.y}); }, {passive:false});
 
 document.getElementById('quality').onchange = e=> send({t:'quality',v:+e.target.value});

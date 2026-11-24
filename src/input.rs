@@ -9,12 +9,45 @@ fn enigo() -> Result<Enigo> {
     Ok(Enigo::new(&Settings::default())?)
 }
 
+/// uinput 虚拟输入设备是否可用。
+///
+/// 失败会退回 enigo（XTEST），但在 Wayland 会话里 XTEST 不起作用 —— 所以把
+/// 失败原因记一条日志，否则远程表现为「能看不能点」却毫无线索。
+#[cfg(target_os = "linux")]
+fn uinput_ready() -> bool {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static STATE: AtomicU8 = AtomicU8::new(0); // 0=未探测 1=可用 2=不可用
+    match STATE.load(Ordering::Relaxed) {
+        1 => return true,
+        2 => return false,
+        _ => {}
+    }
+    match crate::uinput::ensure() {
+        Ok(()) => {
+            STATE.store(1, Ordering::Relaxed);
+            tracing::info!("uinput virtual input device ready");
+            true
+        }
+        Err(e) => {
+            if STATE.swap(2, Ordering::Relaxed) == 0 {
+                tracing::warn!("uinput unavailable, falling back to enigo: {e:#}");
+            }
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn uinput_ready() -> bool {
+    false
+}
+
 /// 打字（Unicode 文本路径，中文/英文都行）。
 /// 特殊控制字符映射：\r→Enter、\x08→Backspace、\t→Tab、\x1b→Escape、
 /// \x1b[A/B/C/D→方向键、\x1b[H/F→Home/End、\x1b[3~→Delete、\x1b[5~/6~→PgUp/PgDn、\x1b[2~→Insert。
 pub fn type_text(text: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
-    if crate::uinput::available() {
+    if uinput_ready() {
         return type_text_uinput(text);
     }
     let chars = text.chars().count();
@@ -133,7 +166,7 @@ fn type_text_uinput(text: &str) -> Result<()> {
 /// 单独按 Shift：切换目标设备输入法（Win+Space / mac 切换输入法快捷键）
 pub fn toggle_ime() -> Result<()> {
     #[cfg(target_os = "linux")]
-    if crate::uinput::available() {
+    if uinput_ready() {
         return crate::uinput::combo_names(&["super".to_string(), "space".to_string()]);
     }
     let mut e = enigo()?;
@@ -170,7 +203,7 @@ pub fn hotkey(combo: &str) -> Result<()> {
         bail!("combo must have 1..{MAX_COMBO} parts");
     }
     #[cfg(target_os = "linux")]
-    if crate::uinput::available() {
+    if uinput_ready() {
         let names: Vec<String> = parts.iter().map(|s| s.to_string()).collect();
         return crate::uinput::combo_names(&names);
     }
@@ -277,7 +310,7 @@ fn parse_key(s: &str) -> Result<KeyOrMod> {
 /// 不可用时（例如非 root）再退回 enigo/XTEST。
 pub fn mouse_move(x: i64, y: i64) -> Result<()> {
     #[cfg(target_os = "linux")]
-    if crate::uinput::available() {
+    if uinput_ready() {
         return crate::uinput::move_to(x, y);
     }
     let mut e = enigo()?;
@@ -288,7 +321,7 @@ pub fn mouse_move(x: i64, y: i64) -> Result<()> {
 /// 鼠标按下（按住不放，配合 mouse_up 实现拖选/拖窗口）。
 pub fn mouse_down(button: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
-    if crate::uinput::available() {
+    if uinput_ready() {
         return crate::uinput::button(button, crate::uinput::Action::Press);
     }
     let btn = parse_button(button)?;
@@ -300,7 +333,7 @@ pub fn mouse_down(button: &str) -> Result<()> {
 /// 鼠标抬起（结束按住）。
 pub fn mouse_up(button: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
-    if crate::uinput::available() {
+    if uinput_ready() {
         return crate::uinput::button(button, crate::uinput::Action::Release);
     }
     let btn = parse_button(button)?;
@@ -320,7 +353,7 @@ fn parse_button(button: &str) -> Result<enigo::Button> {
 
 pub fn mouse_click(button: &str, count: u32) -> Result<()> {
     #[cfg(target_os = "linux")]
-    if crate::uinput::available() {
+    if uinput_ready() {
         let n = count.clamp(1, 3);
         for _ in 0..n {
             crate::uinput::button(button, crate::uinput::Action::Click)?;
@@ -338,7 +371,7 @@ pub fn mouse_click(button: &str, count: u32) -> Result<()> {
 
 pub fn mouse_scroll(dy: i64) -> Result<()> {
     #[cfg(target_os = "linux")]
-    if crate::uinput::available() {
+    if uinput_ready() {
         return crate::uinput::scroll(dy);
     }
     let mut e = enigo()?;
@@ -426,7 +459,7 @@ fn win_press_code(code: &str, shift: bool) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn linux_press_code(code: &str, shift: bool, fallback_char: Option<char>) -> Result<()> {
-    if crate::uinput::available() {
+    if uinput_ready() {
         let Some(kc) = crate::uinput::keycode_from_browser(code) else {
             bail!("unsupported key code: {code}");
         };
@@ -549,7 +582,7 @@ fn hold_modifier(name: &str) -> Result<()> {
     }
     #[cfg(target_os = "linux")]
     {
-        if crate::uinput::available() {
+        if uinput_ready() {
             if let Some(code) = crate::uinput::modifier_code(name) {
                 return crate::uinput::key(code, true);
             }
@@ -582,7 +615,7 @@ fn release_modifier(name: &str) -> Result<()> {
     }
     #[cfg(target_os = "linux")]
     {
-        if crate::uinput::available() {
+        if uinput_ready() {
             if let Some(code) = crate::uinput::modifier_code(name) {
                 return crate::uinput::key(code, false);
             }

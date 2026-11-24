@@ -17,9 +17,11 @@ use std::sync::Mutex;
 // ---- linux/uinput.h 的 ioctl 号 ----
 const UI_DEV_CREATE: libc::c_ulong = 0x5501;
 const UI_DEV_DESTROY: libc::c_ulong = 0x5502;
-const UI_SET_EVBIT: libc::c_ulong = 0x4004_6564; // _IOW('U', 100, int)
-const UI_SET_KEYBIT: libc::c_ulong = 0x4004_6565; // _IOW('U', 101, int)
-const UI_SET_RELBIT: libc::c_ulong = 0x4004_6566; // _IOW('U', 102, int)
+const UI_SET_EVBIT: libc::c_ulong = 0x4004_5564; // _IOW('U', 100, int)
+const UI_SET_KEYBIT: libc::c_ulong = 0x4004_5565; // _IOW('U', 101, int)
+const UI_SET_RELBIT: libc::c_ulong = 0x4004_5566; // _IOW('U', 102, int)
+const UI_SET_PHYS: libc::c_ulong = 0x4008_5508; // _IOW('U', 108, char*)
+const UI_DEV_SETUP: libc::c_ulong = 0x405C_5503; // _IOW('U', 3, struct uinput_setup) size=92
 
 // 事件类型
 const EV_SYN: u16 = 0x00;
@@ -237,8 +239,8 @@ pub fn modifier_code(name: &str) -> Option<u16> {
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct UInputId {
-    bustype: u8,
-    vendor: u8,
+    bustype: u16,
+    vendor: u16,
     product: u16,
     version: u16,
 }
@@ -249,10 +251,6 @@ struct UInputSetup {
     id: UInputId,
     name: [u8; 80],
     ff_effects_max: u32,
-    absmax: [i32; 64],
-    absmin: [i32; 64],
-    absfuzz: [i32; 64],
-    absflat: [i32; 64],
 }
 
 impl Default for UInputSetup {
@@ -261,10 +259,6 @@ impl Default for UInputSetup {
             id: UInputId::default(),
             name: [0; 80],
             ff_effects_max: 0,
-            absmax: [0; 64],
-            absmin: [0; 64],
-            absfuzz: [0; 64],
-            absflat: [0; 64],
         }
     }
 }
@@ -435,7 +429,7 @@ fn create_device() -> Result<Device> {
     let rc = unsafe {
         libc::ioctl(
             fd,
-            0x45C0_5503, // _IOW('U', 3, struct uinput_setup) — size 1116
+            UI_DEV_SETUP,
             &setup as *const UInputSetup as *const libc::c_void,
         )
     };
@@ -445,7 +439,7 @@ fn create_device() -> Result<Device> {
         unsafe {
             libc::ioctl(
                 fd,
-                0x4004_5508, // _IOC(_IOC_WRITE, 'U', 8, 0)
+                UI_SET_PHYS,
                 phys.as_ptr() as *const libc::c_char,
             );
         }

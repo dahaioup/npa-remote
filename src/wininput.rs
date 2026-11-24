@@ -150,10 +150,31 @@ impl Input {
     }
 }
 
+/// 是否允许切换到前台窗口所在桌面（默认关闭）。
+///
+/// SetThreadDesktop 不会重挂线程输入队列，切换后 SendInput 会失败；
+/// 只有在明确知道目标桌面（登录界面 / Winlogon）时才需要切。
+fn desktop_switch_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("NPA_ATTACH_FOREGROUND_DESKTOP")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
 fn send(inputs: &[Input]) -> Result<()> {
     // 登录界面（Winlogon 桌面）在别的 desktop 上，SendInput 只作用于当前线程的桌面，
     // 所以先切到前台窗口所在的桌面，注入完再切回来。
-    let _guard = DesktopGuard::enter_foreground_desktop();
+    //
+    // 但 SetThreadDesktop 不会重挂线程的输入队列，切过去之后 SendInput 反而会失败
+    // （SendInput sent 0/1 events）。所以默认**不切**，只有显式设置
+    // NPA_ATTACH_FOREGROUND_DESKTOP=1 时才启用（需要进程有 DESKTOP_SWITCHDESKTOP 权限）。
+    let _guard = if desktop_switch_enabled() {
+        DesktopGuard::enter_foreground_desktop()
+    } else {
+        DesktopGuard::none()
+    };
     let n = unsafe {
         SendInput(
             inputs.len() as u32,
@@ -177,6 +198,14 @@ pub struct DesktopGuard {
 }
 
 impl DesktopGuard {
+    /// 不做任何桌面切换（默认行为）。
+    pub fn none() -> Self {
+        DesktopGuard {
+            prev: None,
+            opened: None,
+        }
+    }
+
     /// 若前台窗口位于别的桌面则切过去；失败（无 DESKTOP_SWITCHDESKTOP 权限）则保持原桌面。
     pub fn enter_foreground_desktop() -> Self {
         let mut guard = DesktopGuard {

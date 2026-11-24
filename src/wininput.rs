@@ -99,9 +99,13 @@ struct MouseInput {
     dw_extra_info: usize,
 }
 
+// 注意：必须是真正的 union，不能用 struct 模拟。
+// C 的 INPUT（x64）= DWORD type(4) + padding(4) + union(32) = 40 字节；
+// 若用 struct{ki,mi} 并排会变成 64 字节，SendInput 校验 cbSize != sizeof(INPUT)
+// 直接返回 ERROR_INVALID_PARAMETER(87)，一个事件都注不进去。
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct InputUnion {
+union InputUnion {
     ki: KeyboardInput,
     mi: MouseInput,
 }
@@ -112,6 +116,12 @@ struct Input {
     r#type: u32,
     u: InputUnion,
 }
+
+// 编译期断言：INPUT 必须是 40 字节（x64）/ 28 字节（x86）。
+const _: () = assert!(
+    std::mem::size_of::<Input>() == if cfg!(target_pointer_width = "64") { 40 } else { 28 },
+    "INPUT struct layout is wrong: SendInput will reject it with ERROR_INVALID_PARAMETER"
+);
 
 impl Input {
     fn keyboard(vk: u16, scan: u16, flags: u32) -> Self {
@@ -125,14 +135,6 @@ impl Input {
                     time: 0,
                     dw_extra_info: 0,
                 },
-                mi: MouseInput {
-                    dx: 0,
-                    dy: 0,
-                    mouse_data: 0,
-                    dw_flags: 0,
-                    time: 0,
-                    dw_extra_info: 0,
-                },
             },
         }
     }
@@ -141,13 +143,6 @@ impl Input {
         Self {
             r#type: INPUT_MOUSE,
             u: InputUnion {
-                ki: KeyboardInput {
-                    w_vk: 0,
-                    w_scan: 0,
-                    dw_flags: 0,
-                    time: 0,
-                    dw_extra_info: 0,
-                },
                 mi: MouseInput {
                     dx,
                     dy,

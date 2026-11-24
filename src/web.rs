@@ -242,6 +242,11 @@ async fn handle_control(v: &Value, cfg: &StreamCfg) -> String {
                     let (ex, ey) = map_frame_to_enigo(x, y, cfg.scale());
                     crate::input::mouse_move(ex, ey).map_err(|e| e.to_string())?;
                 }
+                // 带修饰键的点击（ctrl+click 多选、shift+click 连选）
+                let mods = mods_of(v);
+                if !mods.is_empty() {
+                    crate::input::hold_modifiers(&mods).map_err(|e| e.to_string())?;
+                }
                 crate::input::mouse_down(button).map_err(|e| e.to_string())?;
                 Ok(json_ok("down"))
             }
@@ -255,7 +260,25 @@ async fn handle_control(v: &Value, cfg: &StreamCfg) -> String {
                     }
                 }
                 crate::input::mouse_up(button).map_err(|e| e.to_string())?;
+                let mods = mods_of(v);
+                if !mods.is_empty() {
+                    crate::input::release_modifiers(&mods).map_err(|e| e.to_string())?;
+                }
                 Ok(json_ok("up"))
+            }
+            "key" => {
+                // 物理按键（输入法友好）：浏览器传 KeyboardEvent.code
+                let code = v.get("code").and_then(|x| x.as_str()).unwrap_or("");
+                if code.is_empty() {
+                    return Err("code required".to_string());
+                }
+                let shift = v.get("shift").and_then(|x| x.as_bool()).unwrap_or(false);
+                let ch = v
+                    .get("ch")
+                    .and_then(|x| x.as_str())
+                    .and_then(|s| s.chars().next());
+                crate::input::press_code(code, shift, ch).map_err(|e| e.to_string())?;
+                Ok(json_ok("key"))
             }
             "type" => {
                 let text = v.get("text").and_then(|x| x.as_str()).ok_or("text required")?;
@@ -357,6 +380,19 @@ fn xy(v: &Value) -> Result<(i64, i64), String> {
 
 fn json_ok(status: &str) -> Value {
     serde_json::json!({"ok":true,"status":status})
+}
+
+/// 鼠标消息里带的修饰键（ctrl/shift/alt/win），用于 ctrl+click 之类。
+fn mods_of(v: &Value) -> Vec<String> {
+    v.get("mods")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.as_str())
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 服务端毫秒时间戳（帧头采集时刻 + ping 时钟同步用，画面延迟=上屏-采集）。

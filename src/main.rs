@@ -17,6 +17,10 @@ mod pluginrpc;
 mod web;
 #[cfg(target_os = "linux")]
 mod uinput;
+#[cfg(target_os = "windows")]
+mod wininput;
+#[cfg(target_os = "macos")]
+mod macinput;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

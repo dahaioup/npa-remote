@@ -173,17 +173,17 @@ view.addEventListener('mousedown', e=>{
   const p=toScreen(e); if(!p) return;
   dragging = true;
   const btn = e.button===2 ? 'right' : e.button===1 ? 'middle' : 'left';
-  send({t:'down',x:p.x,y:p.y,button:btn});
+  send({t:'down',x:p.x,y:p.y,button:btn,mods:modsOf(e)});
 });
 view.addEventListener('mouseup', e=>{
   if(!dragging) return;
   dragging = false;
   const p=toScreen(e); if(!p) return;
   const btn = e.button===2 ? 'right' : e.button===1 ? 'middle' : 'left';
-  send({t:'up',x:p.x,y:p.y,button:btn});
+  send({t:'up',x:p.x,y:p.y,button:btn,mods:modsOf(e)});
 });
 // mouseleave 兜底：拖出画布也要发 up，否则远端一直按住
-view.addEventListener('mouseleave', ()=>{ if(dragging){ dragging=false; send({t:'up',x:-1,y:-1,button:'left'}); } });
+view.addEventListener('mouseleave', ()=>{ if(dragging){ dragging=false; send({t:'up',x:-1,y:-1,button:'left',mods:[]}); } });
 // 注意：mousedown/mouseup 已经构成一次完整点击（按下+抬起 = 远端收到一个 click），
 // 这里不能再额外发 click —— 否则远端会收到两次点击，被识别成双击。
 // 右键同理：contextmenu 只用来挡掉浏览器自带菜单，点击已由 down/up 完成。
@@ -228,6 +228,15 @@ function plainKey(e){
   if(e.key===' ') return ' ';
   return codeToKey[e.code] || null;
 }
+// 当前按住的修饰键（点击时带上，服务端按住修饰键再点击 → ctrl+click / shift+click）
+function modsOf(e){
+  const m=[];
+  if(e.ctrlKey) m.push('ctrl');
+  if(e.shiftKey) m.push('shift');
+  if(e.altKey) m.push('alt');
+  if(e.metaKey) m.push(isMac?'cmd':'win');
+  return m;
+}
 document.addEventListener('keydown', e=>{
   if(e.target.tagName==='INPUT') return;
   // 单独按 Shift：切换目标设备输入法，不做本地焦点切换
@@ -235,7 +244,17 @@ document.addEventListener('keydown', e=>{
     e.preventDefault(); send({t:'ime'}); return;
   }
   const plain = plainKey(e);
-  if(plain!==null){ e.preventDefault(); send({t:'type',text:plain}); return; }
+  if(plain!==null){
+    e.preventDefault();
+    // 物理键（code）优先：目标机的中文输入法只认物理按键，
+    // 直接发字符会被输入法忽略（打出来还是字母/没候选窗）
+    if(e.code && e.code!=='Unidentified'){
+      send({t:'key',code:e.code,ch:plain,shift:e.shiftKey});
+    } else {
+      send({t:'type',text:plain});
+    }
+    return;
+  }
   // 带修饰键的组合
   const parts=[];
   if(e.ctrlKey) parts.push('ctrl'); if(e.metaKey) parts.push(isMac?'cmd':'win');

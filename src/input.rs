@@ -65,7 +65,17 @@ pub fn type_text(text: &str) -> Result<()> {
                     _ => { e.key(enigo::Key::Escape, enigo::Direction::Click)?; }
                 }
             }
-            _ => { e.text(&c.to_string())?; }
+            _ => {
+                // 普通字符：ASCII 走物理键（输入法能组词），非 ASCII 走 Unicode 注入
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                {
+                    if let Some(code) = code_for_char(c) {
+                        press_code(code, c.is_ascii_uppercase(), Some(c))?;
+                        continue;
+                    }
+                }
+                e.text(&c.to_string())?;
+            }
         }
     }
     Ok(())
@@ -164,6 +174,30 @@ pub fn hotkey(combo: &str) -> Result<()> {
         let names: Vec<String> = parts.iter().map(|s| s.to_string()).collect();
         return crate::uinput::combo_names(&names);
     }
+    #[cfg(target_os = "windows")]
+    {
+        let mut vks = Vec::new();
+        for p in &parts {
+            let Some(vk) = crate::wininput::vk_from_name(p) else {
+                bail!("unknown key: {p}");
+            };
+            vks.push(vk);
+        }
+        return crate::wininput::send_combo(&vks);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut codes = Vec::new();
+        for p in &parts {
+            let Some(code) = crate::macinput::keycode_from_name(p) else {
+                bail!("unknown key: {p}");
+            };
+            codes.push((code, crate::macinput::flag_for(p)));
+        }
+        return crate::macinput::send_combo(&codes);
+    }
+    #[allow(unreachable_code)]
+    {
     let mut keys = Vec::new();
     for p in &parts {
         match parse_key(p)? {
@@ -180,6 +214,7 @@ pub fn hotkey(combo: &str) -> Result<()> {
         e.key(*k, enigo::Direction::Release)?;
     }
     Ok(())
+    }
 }
 
 enum KeyOrMod {
@@ -340,6 +375,235 @@ pub fn mouse_pos() -> Result<(i64, i64)> {
         Ok((x, y)) => Ok((x as i64, y as i64)),
         Err(e) => Err(e.into()),
     }
+}
+
+// ================= 物理按键（输入法友好） =================
+//
+// 目标机上的中文输入法（微软拼音/搜狗/ibus/fcitx）只处理**物理按键**：
+// 直接注入 Unicode 文本不会进候选窗，表现是「输入法开着，打出来还是字母」。
+// 所以浏览器把 KeyboardEvent.code 传过来，各平台注入真实按键：
+//   Windows → SendInput(VK + 扫描码)
+//   Linux   → uinput 虚拟键盘（Wayland 合成器经 libinput 读取）
+//   macOS   → CGEvent keycode
+
+/// 注入一个物理按键（浏览器 KeyboardEvent.code）。
+pub fn press_code(code: &str, shift: bool, fallback_char: Option<char>) -> Result<()> {
+    let _ = &fallback_char;
+    #[cfg(target_os = "windows")]
+    {
+        return win_press_code(code, shift);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return linux_press_code(code, shift, fallback_char);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return mac_press_code(code, shift);
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (code, shift, fallback_char);
+        bail!("unsupported platform");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn win_press_code(code: &str, shift: bool) -> Result<()> {
+    let Some(vk) = crate::wininput::vk_from_browser_code(code) else {
+        bail!("unsupported key code: {code}");
+    };
+    if shift {
+        crate::wininput::send_vk(0x10, true)?;
+    }
+    crate::wininput::send_vk(vk, true)?;
+    crate::wininput::send_vk(vk, false)?;
+    if shift {
+        crate::wininput::send_vk(0x10, false)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_press_code(code: &str, shift: bool, fallback_char: Option<char>) -> Result<()> {
+    if crate::uinput::available() {
+        let Some(kc) = crate::uinput::keycode_from_browser(code) else {
+            bail!("unsupported key code: {code}");
+        };
+        if shift {
+            crate::uinput::key(crate::uinput::KEY_LEFTSHIFT, true)?;
+        }
+        crate::uinput::key(kc, true)?;
+        crate::uinput::key(kc, false)?;
+        if shift {
+            crate::uinput::key(crate::uinput::KEY_LEFTSHIFT, false)?;
+        }
+        return Ok(());
+    }
+    // 非 root / 无 uinput：退回 enigo（X11 下 XTEST，尽量用按键名）
+    let mut e = enigo()?;
+    if shift {
+        e.key(enigo::Key::Shift, enigo::Direction::Press)?;
+    }
+    match parse_key(code)? {
+        KeyOrMod::Key(k) => e.key(k, enigo::Direction::Click)?,
+        KeyOrMod::Modifier(_) => {
+            if let Some(ch) = fallback_char {
+                e.text(&ch.to_string())?;
+            }
+        }
+    }
+    if shift {
+        e.key(enigo::Key::Shift, enigo::Direction::Release)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn mac_press_code(code: &str, shift: bool) -> Result<()> {
+    let Some(kc) = crate::macinput::keycode_from_browser(code) else {
+        bail!("unsupported key code: {code}");
+    };
+    let flags = if shift {
+        crate::macinput::flag_for("shift")
+    } else {
+        0
+    };
+    crate::macinput::send_key(kc, true, flags)?;
+    crate::macinput::send_key(kc, false, flags)?;
+    Ok(())
+}
+
+/// 字符 → 浏览器 KeyboardEvent.code（字母/数字/空格，用于物理键注入）。
+fn code_for_char(c: char) -> Option<&'static str> {
+    let up = c.to_ascii_uppercase();
+    if c.is_ascii_alphabetic() {
+        return Some(match up {
+            'A' => "KeyA",
+            'B' => "KeyB",
+            'C' => "KeyC",
+            'D' => "KeyD",
+            'E' => "KeyE",
+            'F' => "KeyF",
+            'G' => "KeyG",
+            'H' => "KeyH",
+            'I' => "KeyI",
+            'J' => "KeyJ",
+            'K' => "KeyK",
+            'L' => "KeyL",
+            'M' => "KeyM",
+            'N' => "KeyN",
+            'O' => "KeyO",
+            'P' => "KeyP",
+            'Q' => "KeyQ",
+            'R' => "KeyR",
+            'S' => "KeyS",
+            'T' => "KeyT",
+            'U' => "KeyU",
+            'V' => "KeyV",
+            'W' => "KeyW",
+            'X' => "KeyX",
+            'Y' => "KeyY",
+            'Z' => "KeyZ",
+            _ => return None,
+        });
+    }
+    Some(match c {
+        '0' => "Digit0",
+        '1' => "Digit1",
+        '2' => "Digit2",
+        '3' => "Digit3",
+        '4' => "Digit4",
+        '5' => "Digit5",
+        '6' => "Digit6",
+        '7' => "Digit7",
+        '8' => "Digit8",
+        '9' => "Digit9",
+        ' ' => "Space",
+        _ => return None,
+    })
+}
+
+/// 按住修饰键（配合点击做 ctrl+click / shift+click）。
+pub fn hold_modifiers(mods: &[String]) -> Result<()> {
+    for m in mods {
+        hold_modifier(m)?;
+    }
+    Ok(())
+}
+
+/// 释放修饰键。
+pub fn release_modifiers(mods: &[String]) -> Result<()> {
+    for m in mods.iter().rev() {
+        release_modifier(m)?;
+    }
+    Ok(())
+}
+
+fn hold_modifier(name: &str) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(vk) = crate::wininput::vk_from_name(name) {
+            return crate::wininput::send_vk(vk, true);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if crate::uinput::available() {
+            if let Some(code) = crate::uinput::modifier_code(name) {
+                return crate::uinput::key(code, true);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(code) = crate::macinput::keycode_from_name(name) {
+            return crate::macinput::send_key(code, true, crate::macinput::flag_for(name));
+        }
+    }
+    let mut e = enigo()?;
+    let key = match name.trim().to_ascii_lowercase().as_str() {
+        "ctrl" | "control" => enigo::Key::Control,
+        "shift" => enigo::Key::Shift,
+        "alt" | "option" => enigo::Key::Alt,
+        "cmd" | "command" | "meta" | "win" | "super" => enigo::Key::Meta,
+        other => bail!("unknown modifier: {other}"),
+    };
+    e.key(key, enigo::Direction::Press)?;
+    Ok(())
+}
+
+fn release_modifier(name: &str) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(vk) = crate::wininput::vk_from_name(name) {
+            return crate::wininput::send_vk(vk, false);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if crate::uinput::available() {
+            if let Some(code) = crate::uinput::modifier_code(name) {
+                return crate::uinput::key(code, false);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(code) = crate::macinput::keycode_from_name(name) {
+            return crate::macinput::send_key(code, false, 0);
+        }
+    }
+    let mut e = enigo()?;
+    let key = match name.trim().to_ascii_lowercase().as_str() {
+        "ctrl" | "control" => enigo::Key::Control,
+        "shift" => enigo::Key::Shift,
+        "alt" | "option" => enigo::Key::Alt,
+        "cmd" | "command" | "meta" | "win" | "super" => enigo::Key::Meta,
+        other => bail!("unknown modifier: {other}"),
+    };
+    e.key(key, enigo::Direction::Release)?;
+    Ok(())
 }
 
 #[allow(unused)]

@@ -1,0 +1,348 @@
+// Windows 物理键盘注入（SendInput + 扫描码）。
+//
+// 为什么不用 enigo：enigo 的 `Key::Unicode(c)` 走的是 KEYEVENTF_UNICODE，
+// Windows 的 TSF 输入法框架（微软拼音/搜狗等）只处理**物理按键**，
+// unicode 注入不会进候选窗 —— 表现就是「中文输入法开着，打出来还是字母」。
+//
+// RustDesk 的做法：用 SendInput 注入虚拟键码（带 KEYEVENTF_SCANCODE），
+// 让 IME 看到真实的按键序列，从而正常组词。
+
+use anyhow::{bail, Result};
+
+// ---- user32.dll ----
+#[link(name = "user32")]
+extern "system" {
+    fn SendInput(c_inputs: u32, p_inputs: *const Input, cb_size: i32) -> u32;
+    fn MapVirtualKeyW(u_code: u32, u_map_type: u32) -> u16;
+    fn GetSystemMetrics(n_index: i32) -> i32;
+}
+
+const INPUT_MOUSE: u32 = 0;
+const INPUT_KEYBOARD: u32 = 1;
+
+const KEYEVENTF_EXTENDEDKEY: u32 = 0x0001;
+const KEYEVENTF_KEYUP: u32 = 0x0002;
+const KEYEVENTF_UNICODE: u32 = 0x0004;
+const KEYEVENTF_SCANCODE: u32 = 0x0008;
+
+const MOUSEEVENTF_MOVE: u32 = 0x0001;
+const MOUSEEVENTF_ABSOLUTE: u32 = 0x8000;
+const MOUSEEVENTF_VIRTUALDESK: u32 = 0x4000;
+const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
+const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
+const MOUSEEVENTF_RIGHTDOWN: u32 = 0x0008;
+const MOUSEEVENTF_RIGHTUP: u32 = 0x0010;
+const MOUSEEVENTF_MIDDLEDOWN: u32 = 0x0020;
+const MOUSEEVENTF_MIDDLEUP: u32 = 0x0040;
+const MOUSEEVENTF_WHEEL: u32 = 0x0800;
+
+const MAPVK_VK_TO_VSC: u32 = 0;
+const SM_CXSCREEN: i32 = 0;
+const SM_CYSCREEN: i32 = 1;
+
+/// 需要 EXTENDEDKEY 标记的键（方向键、Home/End、小键盘右侧等）。
+fn is_extended(vk: u16) -> bool {
+    matches!(
+        vk,
+        0x21..=0x2E // Insert/Delete/Home/End/PageUp/PageDown/方向键
+            | 0x5B | 0x5C // Win
+            | 0x5D // Menu
+            | 0xA3 | 0xA5 // 右 Ctrl / 右 Alt
+            | 0x6F..=0x87 // 小键盘
+    )
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KeyboardInput {
+    w_vk: u16,
+    w_scan: u16,
+    dw_flags: u32,
+    time: u32,
+    dw_extra_info: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MouseInput {
+    dx: i32,
+    dy: i32,
+    mouse_data: u32,
+    dw_flags: u32,
+    time: u32,
+    dw_extra_info: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct InputUnion {
+    ki: KeyboardInput,
+    mi: MouseInput,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Input {
+    r#type: u32,
+    u: InputUnion,
+}
+
+impl Input {
+    fn keyboard(vk: u16, scan: u16, flags: u32) -> Self {
+        Self {
+            r#type: INPUT_KEYBOARD,
+            u: InputUnion {
+                ki: KeyboardInput {
+                    w_vk: vk,
+                    w_scan: scan,
+                    dw_flags: flags,
+                    time: 0,
+                    dw_extra_info: 0,
+                },
+                mi: MouseInput {
+                    dx: 0,
+                    dy: 0,
+                    mouse_data: 0,
+                    dw_flags: 0,
+                    time: 0,
+                    dw_extra_info: 0,
+                },
+            },
+        }
+    }
+
+    fn mouse(dx: i32, dy: i32, data: u32, flags: u32) -> Self {
+        Self {
+            r#type: INPUT_MOUSE,
+            u: InputUnion {
+                ki: KeyboardInput {
+                    w_vk: 0,
+                    w_scan: 0,
+                    dw_flags: 0,
+                    time: 0,
+                    dw_extra_info: 0,
+                },
+                mi: MouseInput {
+                    dx,
+                    dy,
+                    mouse_data: data,
+                    dw_flags: flags,
+                    time: 0,
+                    dw_extra_info: 0,
+                },
+            },
+        }
+    }
+}
+
+fn send(inputs: &[Input]) -> Result<()> {
+    let n = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            std::mem::size_of::<Input>() as i32,
+        )
+    };
+    if n as usize != inputs.len() {
+        bail!(
+            "SendInput sent {n}/{} events",
+            inputs.len()
+        );
+    }
+    Ok(())
+}
+
+/// 按下/抬起一个虚拟键（带扫描码，IME 能正确组词）。
+pub fn send_vk(vk: u16, down: bool) -> Result<()> {
+    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) };
+    let mut flags = KEYEVENTF_SCANCODE;
+    if is_extended(vk) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    if !down {
+        flags |= KEYEVENTF_KEYUP;
+    }
+    send(&[Input::keyboard(vk, scan, flags)])
+}
+
+/// 组合键：按下顺序 → 逆序抬起。
+pub fn send_combo(vks: &[u16]) -> Result<()> {
+    for vk in vks {
+        send_vk(*vk, true)?;
+    }
+    for vk in vks.iter().rev() {
+        send_vk(*vk, false)?;
+    }
+    Ok(())
+}
+
+/// 直接注入 Unicode（不经过 IME，用于输入中文等非 ASCII 文本）。
+pub fn send_unicode(ch: char) -> Result<()> {
+    let mut buf = [0u16; 2];
+    for unit in ch.encode_utf16(&mut buf) {
+        send(&[
+            Input::keyboard(0, *unit, KEYEVENTF_UNICODE),
+            Input::keyboard(0, *unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP),
+        ])?;
+    }
+    Ok(())
+}
+
+/// 浏览器 KeyboardEvent.code → Windows 虚拟键码。
+pub fn vk_from_browser_code(code: &str) -> Option<u16> {
+    if let Some(rest) = code.strip_prefix("Key") {
+        if rest.len() == 1 {
+            let c = rest.chars().next().unwrap().to_ascii_uppercase();
+            if c.is_ascii_uppercase() {
+                return Some(c as u16);
+            }
+        }
+    }
+    if let Some(rest) = code.strip_prefix("Digit") {
+        if rest.len() == 1 {
+            if let Some(d) = rest.chars().next().and_then(|c| c.to_digit(10)) {
+                return Some(0x30 + d as u16);
+            }
+        }
+    }
+    Some(match code {
+        "Space" => 0x20,
+        "Enter" | "NumpadEnter" => 0x0D,
+        "Tab" => 0x09,
+        "Escape" => 0x1B,
+        "Backspace" => 0x08,
+        "Delete" => 0x2E,
+        "Insert" => 0x2D,
+        "Home" => 0x24,
+        "End" => 0x23,
+        "PageUp" => 0x21,
+        "PageDown" => 0x22,
+        "ArrowLeft" => 0x25,
+        "ArrowUp" => 0x26,
+        "ArrowRight" => 0x27,
+        "ArrowDown" => 0x28,
+        "Minus" => 0xBD,
+        "Equal" => 0xBB,
+        "BracketLeft" => 0xDB,
+        "BracketRight" => 0xDD,
+        "Backslash" => 0xDC,
+        "Semicolon" => 0xBA,
+        "Quote" => 0xDE,
+        "Backquote" => 0xC0,
+        "Comma" => 0xBC,
+        "Period" => 0xBE,
+        "Slash" => 0xBF,
+        "ContextMenu" => 0x5D,
+        "ControlLeft" => 0xA2,
+        "ControlRight" => 0xA3,
+        "ShiftLeft" => 0xA0,
+        "ShiftRight" => 0xA1,
+        "AltLeft" => 0xA4,
+        "AltRight" => 0xA5,
+        "MetaLeft" => 0x5B,
+        "MetaRight" => 0x5C,
+        "CapsLock" => 0x14,
+        "NumLock" => 0x90,
+        "ScrollLock" => 0x91,
+        "PrintScreen" => 0x2C,
+        "Pause" => 0x13,
+        "F1" => 0x70,
+        "F2" => 0x71,
+        "F3" => 0x72,
+        "F4" => 0x73,
+        "F5" => 0x74,
+        "F6" => 0x75,
+        "F7" => 0x76,
+        "F8" => 0x77,
+        "F9" => 0x78,
+        "F10" => 0x79,
+        "F11" => 0x7A,
+        "F12" => 0x7B,
+        _ => return None,
+    })
+}
+
+/// 组合键名 → 虚拟键码（"ctrl" / "shift" / "alt" / "win" / 单字符）。
+pub fn vk_from_name(name: &str) -> Option<u16> {
+    let low = name.trim().to_ascii_lowercase();
+    match low.as_str() {
+        "ctrl" | "control" => return Some(0x11),
+        "shift" => return Some(0x10),
+        "alt" | "option" => return Some(0x12),
+        "win" | "cmd" | "meta" | "super" | "command" => return Some(0x5B),
+        "space" => return Some(0x20),
+        "enter" | "return" => return Some(0x0D),
+        "tab" => return Some(0x09),
+        "esc" | "escape" => return Some(0x1B),
+        "backspace" => return Some(0x08),
+        "delete" | "del" => return Some(0x2E),
+        "insert" | "ins" => return Some(0x2D),
+        "home" => return Some(0x24),
+        "end" => return Some(0x23),
+        "pageup" | "pgup" => return Some(0x21),
+        "pagedown" | "pgdn" => return Some(0x22),
+        "up" | "arrowup" => return Some(0x26),
+        "down" | "arrowdown" => return Some(0x28),
+        "left" | "arrowleft" => return Some(0x25),
+        "right" | "arrowright" => return Some(0x27),
+        _ => {}
+    }
+    if low.len() == 1 {
+        let c = low.chars().next().unwrap();
+        if c.is_ascii_alphabetic() {
+            return Some(c.to_ascii_uppercase() as u16);
+        }
+        if c.is_ascii_digit() {
+            return Some(c as u16);
+        }
+    }
+    None
+}
+
+/// 鼠标绝对移动（屏幕像素）。
+pub fn mouse_move_abs(x: i32, y: i32) -> Result<()> {
+    let w = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(1);
+    let h = unsafe { GetSystemMetrics(SM_CYSCREEN) }.max(1);
+    let nx = (x.clamp(0, w - 1) as i64 * 65535 / (w - 1).max(1) as i64) as i32;
+    let ny = (y.clamp(0, h - 1) as i64 * 65535 / (h - 1).max(1) as i64) as i32;
+    send(&[Input::mouse(
+        nx,
+        ny,
+        0,
+        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+    )])
+}
+
+/// 鼠标键：down / up。
+pub fn mouse_button(button: &str, down: bool) -> Result<()> {
+    let flags = match button.to_ascii_lowercase().as_str() {
+        "left" | "" => {
+            if down {
+                MOUSEEVENTF_LEFTDOWN
+            } else {
+                MOUSEEVENTF_LEFTUP
+            }
+        }
+        "right" => {
+            if down {
+                MOUSEEVENTF_RIGHTDOWN
+            } else {
+                MOUSEEVENTF_RIGHTUP
+            }
+        }
+        "middle" => {
+            if down {
+                MOUSEEVENTF_MIDDLEDOWN
+            } else {
+                MOUSEEVENTF_MIDDLEUP
+            }
+        }
+        other => bail!("unknown button: {other}"),
+    };
+    send(&[Input::mouse(0, 0, 0, flags)])
+}
+
+/// 滚轮（正值向上，与现有约定一致）。
+pub fn mouse_wheel(delta: i32) -> Result<()> {
+    send(&[Input::mouse(0, 0, delta as u32, MOUSEEVENTF_WHEEL)])
+}

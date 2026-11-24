@@ -68,6 +68,7 @@ fn main() -> Result<()> {
         .init();
     match Cli::parse().cmd {
         Cmd::Serve { bind, port } => {
+            #[cfg(target_os = "windows")]
             log_desktop_context();
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(web::serve(&bind, port))

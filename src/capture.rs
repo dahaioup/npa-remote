@@ -164,6 +164,17 @@ fn grab_cli() -> Result<RgbaImage> {
 }
 
 /// 屏幕信息：分辨率 + 鼠标位置由 input 模块补充，这里给分辨率。
+/// 当前采集屏幕的像素尺寸（多屏时取选中那块）；不抓帧，鼠标移动路径用。
+pub fn capture_screen_size() -> (u32, u32) {
+    let sel = SCREEN_SEL.load(std::sync::atomic::Ordering::Relaxed);
+    let list = screen_list();
+    if list.is_empty() {
+        return (1920, 1080);
+    }
+    let idx = if sel == 0 { 0 } else { sel.min(list.len() - 1) };
+    (list[idx].1, list[idx].2)
+}
+
 pub fn screen_size() -> Result<(u32, u32)> {
     let img = grab_full()?;
     Ok((img.width(), img.height()))

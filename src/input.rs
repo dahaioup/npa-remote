@@ -313,7 +313,7 @@ pub fn mouse_move(x: i64, y: i64) -> Result<()> {
     if uinput_ready() {
         // x/y 是屏幕逻辑点，uinput 走绝对坐标轴需要像素坐标。
         let ppp = crate::capture::pixel_per_point().max(1.0);
-        let (sw, sh) = crate::capture::screen_size();
+        let (sw, sh) = crate::capture::capture_screen_size();
         return crate::uinput::move_to(
             (x as f64 * ppp).round() as i64,
             (y as f64 * ppp).round() as i64,

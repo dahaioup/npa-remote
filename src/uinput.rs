@@ -21,12 +21,22 @@ const UI_SET_EVBIT: libc::c_ulong = 0x4004_5564; // _IOW('U', 100, int)
 const UI_SET_KEYBIT: libc::c_ulong = 0x4004_5565; // _IOW('U', 101, int)
 const UI_SET_RELBIT: libc::c_ulong = 0x4004_5566; // _IOW('U', 102, int)
 const UI_SET_PHYS: libc::c_ulong = 0x4008_5508; // _IOW('U', 108, char*)
+const UI_ABS_SETUP: libc::c_ulong = 0x4004_5540; // _IOW('U', 0x40 + abs_code, int) —— ABS_X=0
+const UI_SET_ABSMIN: libc::c_ulong = 0x4004_5523; // _IOW('U', 0x23, int)
+const UI_SET_ABSMAX: libc::c_ulong = 0x4004_5524; // _IOW('U', 0x24, int)
 const UI_DEV_SETUP: libc::c_ulong = 0x405C_5503; // _IOW('U', 3, struct uinput_setup) size=92
 
 // 事件类型
 const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
 const EV_REL: u16 = 0x02;
+const EV_ABS: u16 = 0x03;
+
+const ABS_X: u16 = 0x00;
+const ABS_Y: u16 = 0x01;
+
+/// 绝对坐标轴的取值范围（与 ydotool 一致）。
+const ABS_MAX: i32 = 32767;
 
 const SYN_REPORT: i32 = 0;
 const REL_X: u16 = 0x00;
@@ -318,15 +328,24 @@ fn create_device() -> Result<Device> {
     }
 
     // 事件类型
-    for ev in [EV_SYN, EV_KEY, EV_REL] {
+    for ev in [EV_SYN, EV_KEY, EV_REL, EV_ABS] {
         ioctl_set(fd, UI_SET_EVBIT, ev as libc::c_ulong)?;
+    }
+    // 绝对坐标轴：绝对定位才能绕开 Wayland 合成器的指针加速（相对量会被缩放，
+    // 远程光标就会飘）。只注册 ABS_X/ABS_Y 而不注册 REL_X/REL_Y，
+    // libinput 才会把它当「绝对指针设备」而不是触摸板。
+    for (code, name) in [(ABS_X, "ABS_X"), (ABS_Y, "ABS_Y")] {
+        ioctl_set(fd, UI_ABS_SETUP + code as libc::c_ulong, code as libc::c_ulong)?;
+        ioctl_set(fd, UI_SET_ABSMIN, 0)?;
+        ioctl_set(fd, UI_SET_ABSMAX, ABS_MAX as libc::c_ulong)?;
+        let _ = name;
     }
     // 鼠标键
     for b in [BTN_LEFT, BTN_RIGHT, BTN_MIDDLE] {
         ioctl_set(fd, UI_SET_KEYBIT, b as libc::c_ulong)?;
     }
     // 相对轴
-    for r in [REL_X, REL_Y, REL_WHEEL] {
+    for r in [REL_WHEEL] {
         ioctl_set(fd, UI_SET_RELBIT, r as libc::c_ulong)?;
     }
     // 键盘键码（常用子集即可，用到哪个注册哪个）
@@ -499,31 +518,34 @@ fn write_event(fd: RawFd, ev: InputEvent) -> Result<()> {
 }
 
 /// 把光标移动到 (x, y)（屏幕绝对坐标）。uinput 只有相对量，这里自己记位置。
-pub fn move_to(x: i64, y: i64) -> Result<()> {
+pub fn move_to(x: i64, y: i64, sw: u32, sh: u32) -> Result<()> {
     ensure()?;
     let mut guard = DEVICE.lock().map_err(|_| anyhow::anyhow!("uinput lock poisoned"))?;
     let dev = guard.as_mut().context("uinput device missing")?;
-    let (last_x, last_y) = dev.pos.unwrap_or((x, y));
-    let dx = x - last_x;
-    let dy = y - last_y;
-    if dx == 0 && dy == 0 {
-        return Ok(());
-    }
+    // 绝对定位：坐标按屏幕像素换算到 0..ABS_MAX。
+    // 用绝对量而不是相对量，是为了绕开 Wayland 合成器的指针加速——
+    // 相对量会被加速曲线缩放，远程光标会越点越偏。
+    let w = sw.max(2) as f64;
+    let h = sh.max(2) as f64;
+    let ax = (((x as f64) * (ABS_MAX as f64)) / (w - 1.0)).round() as i32;
+    let ay = (((y as f64) * (ABS_MAX as f64)) / (h - 1.0)).round() as i32;
+    let ax = ax.clamp(0, ABS_MAX);
+    let ay = ay.clamp(0, ABS_MAX);
     write_event(
         dev.fd,
         InputEvent {
-            type_: EV_REL,
-            code: REL_X,
-            value: dx as i32,
+            type_: EV_ABS,
+            code: ABS_X,
+            value: ax,
             ..Default::default()
         },
     )?;
     write_event(
         dev.fd,
         InputEvent {
-            type_: EV_REL,
-            code: REL_Y,
-            value: dy as i32,
+            type_: EV_ABS,
+            code: ABS_Y,
+            value: ay,
             ..Default::default()
         },
     )?;

@@ -311,7 +311,15 @@ fn parse_key(s: &str) -> Result<KeyOrMod> {
 pub fn mouse_move(x: i64, y: i64) -> Result<()> {
     #[cfg(target_os = "linux")]
     if uinput_ready() {
-        return crate::uinput::move_to(x, y);
+        // x/y 是屏幕逻辑点，uinput 走绝对坐标轴需要像素坐标。
+        let ppp = crate::capture::pixel_per_point().max(1.0);
+        let (sw, sh) = crate::capture::screen_size();
+        return crate::uinput::move_to(
+            (x as f64 * ppp).round() as i64,
+            (y as f64 * ppp).round() as i64,
+            sw,
+            sh,
+        );
     }
     let mut e = enigo()?;
     e.move_mouse(x as i32, y as i32, enigo::Coordinate::Abs)?;

@@ -396,14 +396,16 @@ NON_SHM_FRAME = """    pub fn frame<'b>(&'b mut self) -> std::io::Result<&'b [u8
             // NPA: non-shm fallback — 用独立连接做非 shm 读回。原连接上可能
             // 还挂着之前卡住的 shm 请求留下的待处理错误，xcb 会让后续
             // GetImage 的回复直接返回 NULL（且不附错误对象）。
-            if self.non_shm_conn.is_null()
-                || xcb_connection_has_error(self.non_shm_conn) != 0
-            {
-                if !self.non_shm_conn.is_null() {
-                    xcb_disconnect(self.non_shm_conn);
-                    self.non_shm_conn = std::ptr::null_mut();
+            unsafe {
+                if self.non_shm_conn.is_null()
+                    || xcb_connection_has_error(self.non_shm_conn) != 0
+                {
+                    if !self.non_shm_conn.is_null() {
+                        xcb_disconnect(self.non_shm_conn);
+                        self.non_shm_conn = std::ptr::null_mut();
+                    }
+                    self.non_shm_conn = xcb_connect(std::ptr::null(), std::ptr::null_mut());
                 }
-                self.non_shm_conn = xcb_connect(std::ptr::null(), std::ptr::null_mut());
             }
             let server = if self.non_shm_conn.is_null() {
                 self.display.server().raw()

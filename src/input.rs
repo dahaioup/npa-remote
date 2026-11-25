@@ -325,11 +325,53 @@ pub fn mouse_move(x: i64, y: i64) -> Result<()> {
     // 统一走 wininput 的 MOUSEEVENTF_ABSOLUTE|VIRTUALDESK（归一化 0..65535）。
     #[cfg(target_os = "windows")]
     {
-        return crate::wininput::mouse_move_abs(x as i32, y as i32);
+        let before = crate::wininput::cursor_pos().ok();
+        crate::wininput::mouse_move_abs(x as i32, y as i32)?;
+        // 输入是否真的生效：被 Synergy/AweSun 之类共享键鼠接管时，注入事件会被吞掉，
+        // 光标原地不动（画面正常、点不动）。这里异步复核一次，命中就写日志提示。
+        if let Some((bx, by)) = before {
+            if (x as i32, y as i32) != (bx, by) && grabber_check_due() {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                    if let Ok((ax, ay)) = crate::wininput::cursor_pos() {
+                        if (ax, ay) == (bx, by) {
+                            let grabbers = crate::wininput::running_input_grabbers();
+                            let hint = if grabbers.is_empty() {
+                                "unknown".to_string()
+                            } else {
+                                grabbers.join(", ")
+                            };
+                            tracing::warn!(
+                                "input not delivered: cursor stayed at ({ax},{ay}); possible input grabber: {hint}"
+                            );
+                        }
+                    }
+                });
+            }
+        }
+        return Ok(());
     }
     let mut e = enigo()?;
     e.move_mouse(x as i32, y as i32, enigo::Coordinate::Abs)?;
     Ok(())
+}
+
+/// 两次「输入被接管」复核之间的最小间隔（秒）——避免每次鼠标移动都起线程。
+#[cfg(target_os = "windows")]
+fn grabber_check_due() -> bool {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST: AtomicI64 = AtomicI64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let last = LAST.load(Ordering::Relaxed);
+    if now - last >= 2 {
+        LAST.store(now, Ordering::Relaxed);
+        true
+    } else {
+        false
+    }
 }
 
 /// 鼠标按下（按住不放，配合 mouse_up 实现拖选/拖窗口）。

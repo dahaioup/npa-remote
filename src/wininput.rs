@@ -13,9 +13,12 @@ use anyhow::{bail, Result};
 #[link(name = "user32")]
 extern "system" {
     fn SendInput(c_inputs: u32, p_inputs: *const Input, cb_size: i32) -> u32;
+    fn keybd_event(b_vk: u8, b_scan: u8, dw_flags: u32, dw_extra_info: usize);
     fn MapVirtualKeyW(u_code: u32, u_map_type: u32) -> u16;
     fn GetSystemMetrics(n_index: i32) -> i32;
     fn GetCursorPos(lp_point: *mut CursorPoint) -> i32;
+    fn SetCursorPos(x: i32, y: i32) -> i32;
+    fn GetWindowTextW(hwnd: isize, lp_string: *mut u16, n_max_count: i32) -> i32;
     // 桌面切换：登录界面（Winlogon 桌面）不属于当前用户桌面，SendInput 打不到。
     fn GetForegroundWindow() -> isize;
     fn GetWindowThreadProcessId(hwnd: isize, lpdwprocessid: *mut u32) -> u32;
@@ -64,10 +67,10 @@ const DESKTOP_SWITCHDESKTOP: u32 = 0x0100;
 const INPUT_MOUSE: u32 = 0;
 const INPUT_KEYBOARD: u32 = 1;
 
+#[allow(dead_code)]
 const KEYEVENTF_EXTENDEDKEY: u32 = 0x0001;
 const KEYEVENTF_KEYUP: u32 = 0x0002;
 const KEYEVENTF_UNICODE: u32 = 0x0004;
-const KEYEVENTF_SCANCODE: u32 = 0x0008;
 
 const MOUSEEVENTF_MOVE: u32 = 0x0001;
 const MOUSEEVENTF_ABSOLUTE: u32 = 0x8000;
@@ -86,6 +89,7 @@ const SM_CXSCREEN: i32 = 0;
 const SM_CYSCREEN: i32 = 1;
 
 /// 需要 EXTENDEDKEY 标记的键（方向键、Home/End、小键盘右侧等）。
+#[allow(dead_code)]
 fn is_extended(vk: u16) -> bool {
     matches!(
         vk,
@@ -298,15 +302,59 @@ pub fn open_logon_desktop() -> Result<isize> {
 
 /// 按下/抬起一个虚拟键（带扫描码，IME 能正确组词）。
 pub fn send_vk(vk: u16, down: bool) -> Result<()> {
-    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) };
-    let mut flags = KEYEVENTF_SCANCODE;
-    if is_extended(vk) {
-        flags |= KEYEVENTF_EXTENDEDKEY;
+    // 实测（158 / Windows 11，焦点在 WinForms 文本框）：
+    //   - SendInput(虚拟键) 返回成功，但目标窗口只收到 WM_KEYDOWN、没有 WM_CHAR
+    //     → 字符不落盘，输入法也组不出词；
+    //   - keybd_event 走传统键盘驱动路径，字符与输入法都正常。
+    // 所以键盘统一用 keybd_event；SendInput 只保留给鼠标（MOUSEEVENTF_*）。
+    //
+    // 扫描码用 MapVirtualKey 从当前键盘布局换算，TSF 输入法靠它识别物理按键。
+    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u8;
+    let flags = if down { 0 } else { KEYEVENTF_KEYUP };
+    unsafe { keybd_event(vk as u8, scan, flags, 0) };
+    Ok(())
+}
+
+/// 可能接管键盘/鼠标输入的进程（共享键鼠类软件）。
+///
+/// 158 上 Synergy 服务端在跑时会把本机输入全部转发给客户端（Synergy 的低级钩子），
+/// 此时 SendInput/keybd_event 注入的事件被吞掉——远程控制表现为「画面正常、点不动」。
+/// 这类进程只能由用户侧退出或停服务，插件只能识别并提示。
+const INPUT_GRABBER_PATTERNS: &[&str] = &[
+    "synergy",
+    "barrier",
+    "input_leap",
+    "awesun",
+    "sunlogin",
+    "todesk",
+    "parsec",
+    "anydesk",
+    "rustdesk",
+];
+
+/// 列出正在运行的可能接管输入的进程（名称 + PID）。
+pub fn running_input_grabbers() -> Vec<String> {
+    let out = match std::process::Command::new("tasklist")
+        .args(["/FO", "CSV", "/NH"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+    let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+    let mut hits: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let mut cols = line.split(',');
+        let name = cols.next().unwrap_or("").trim().trim_matches('"');
+        let pid = cols.next().unwrap_or("").trim().trim_matches('"');
+        if name.is_empty() {
+            continue;
+        }
+        if INPUT_GRABBER_PATTERNS.iter().any(|p| name.contains(p)) {
+            hits.push(format!("{name} (pid {pid})"));
+        }
     }
-    if !down {
-        flags |= KEYEVENTF_KEYUP;
-    }
-    send(&[Input::keyboard(vk, scan, flags)])
+    hits
 }
 
 /// 组合键：按下顺序 → 逆序抬起。

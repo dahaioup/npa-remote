@@ -312,9 +312,15 @@ async fn handle_control(v: &Value, cfg: &StreamCfg) -> String {
                     .map(|(id, sw, sh)| serde_json::json!({"id": id, "w": sw, "h": sh}))
                     .collect();
                 let sel = crate::capture::SCREEN_SEL.load(std::sync::atomic::Ordering::Relaxed);
+                // 输入被接管（Synergy/AweSun 等共享键鼠）时把嫌疑进程报给前端。
+                #[cfg(target_os = "windows")]
+                let grabbers = crate::wininput::running_input_grabbers();
+                #[cfg(not(target_os = "windows"))]
+                let grabbers: Vec<String> = Vec::new();
                 Ok(serde_json::json!({"ok":true,"x":x,"y":y,"screen_w":w,"screen_h":h,
                     "screen": if sel == NO_SCREEN { -1 } else { sel as i64 },
-                    "screens": screens}))
+                    "screens": screens,
+                    "input_grabbers": grabbers}))
             }
             "screen" => {
                 // id<0（下拉「无」）→ NO_SCREEN：停止推流，连接与控制保持

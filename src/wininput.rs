@@ -27,7 +27,27 @@ extern "system" {
     fn SetThreadDesktop(h_desktop: isize) -> i32;
     fn OpenDesktopW(lpszdesktop: *const u16, dwflags: u32, dwdesiredaccess: u32) -> isize;
     fn CloseDesktop(h_desktop: isize) -> i32;
+    // 输入队列：PeekMessage(PM_NOREMOVE) 会强制当前线程创建消息队列。
+    fn PeekMessageW(lp_msg: *mut Msg, hwnd: isize, min: u32, max: u32, remove: u32) -> i32;
 }
+
+/// Windows MSG（只用 PeekMessage 的缓冲区，字段顺序与 x64 布局一致）。
+#[repr(C)]
+#[derive(Default)]
+#[allow(dead_code)]
+struct Msg {
+    hwnd: isize,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+    time: u32,
+    pt_x: i32,
+    pt_y: i32,
+    l_private: u32,
+}
+
+const PM_NOREMOVE: u32 = 0x0000;
+const PM_REMOVE: u32 = 0x0001;
 
 /// Windows POINT（GetCursorPos 用）。
 #[repr(C)]
@@ -302,8 +322,89 @@ pub fn open_logon_desktop() -> Result<isize> {
     Ok(h)
 }
 
-/// 按下/抬起一个虚拟键（带扫描码，IME 能正确组词）。
+// ---------- 键盘注入线程 ----------
+//
+// 实测（158 / Windows 11，焦点在 WinForms 文本框）：
+//   - 主线程（WinForms 线程，自带输入队列）里 keybd_event → 字符正常落盘；
+//   - 派生线程（没有输入队列）里 keybd_event → 调用挂起（探针 PHASE_B 3 秒未返回）。
+// 插件的 WS 处理跑在 tokio worker 线程上（没有输入队列），键盘注入因此全部失效
+// （鼠标走 SendInput 不受此限，所以症状是「鼠标能动、键盘不能」）。
+//
+// 修法：键盘注入搬到专用线程——线程启动时用 PeekMessage(PM_NOREMOVE) 强制附加输入
+// 队列，并周期泵消息保持队列存活；按键请求经通道发送，保证按下/抬起顺序不乱。
+
+enum KeyCmd {
+    Vk { vk: u16, down: bool },
+    Unicode(char),
+}
+
+struct Injector {
+    tx: std::sync::mpsc::Sender<(KeyCmd, std::sync::mpsc::Sender<Result<()>>)>,
+}
+
+fn injector() -> &'static Injector {
+    static I: std::sync::OnceLock<Injector> = std::sync::OnceLock::new();
+    I.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<(KeyCmd, std::sync::mpsc::Sender<Result<()>>)>();
+        std::thread::Builder::new()
+            .name("npa-key-injector".into())
+            .spawn(move || injector_loop(rx))
+            .expect("spawn key injector thread");
+        Injector { tx }
+    })
+}
+
+fn injector_loop(rx: std::sync::mpsc::Receiver<(KeyCmd, std::sync::mpsc::Sender<Result<()>>)>) {
+    attach_input_queue();
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok((cmd, reply)) => {
+                let r = match cmd {
+                    KeyCmd::Vk { vk, down } => raw_keybd_event(vk, down),
+                    KeyCmd::Unicode(ch) => raw_send_unicode(ch),
+                };
+                let _ = reply.send(r);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => drain_messages(),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+/// 强制当前线程创建消息队列（没有输入队列时 keybd_event 会挂起）。
+fn attach_input_queue() {
+    unsafe {
+        let mut msg = Msg::default();
+        PeekMessageW(&mut msg as *mut Msg, 0, 0, 0, PM_NOREMOVE);
+    }
+}
+
+/// 泵掉队列里的消息，保持输入队列存活。
+fn drain_messages() {
+    unsafe {
+        let mut msg = Msg::default();
+        while PeekMessageW(&mut msg as *mut Msg, 0, 0, 0, PM_REMOVE) != 0 {
+            msg = Msg::default();
+        }
+    }
+}
+
+fn injector_send(cmd: KeyCmd) -> Result<()> {
+    let (rtx, rrx) = std::sync::mpsc::channel();
+    injector()
+        .tx
+        .send((cmd, rtx))
+        .map_err(|_| anyhow::anyhow!("key injector thread is not running"))?;
+    rrx.recv_timeout(std::time::Duration::from_secs(3))
+        .map_err(|_| anyhow::anyhow!("key injector timed out"))?
+}
+
+/// 按下/抬起一个虚拟键（走 keybd_event 传统驱动路径，IME 能正确组词）。
 pub fn send_vk(vk: u16, down: bool) -> Result<()> {
+    injector_send(KeyCmd::Vk { vk, down })
+}
+
+fn raw_keybd_event(vk: u16, down: bool) -> Result<()> {
     // 实测（158 / Windows 11，焦点在 WinForms 文本框）：
     //   - SendInput(虚拟键) 返回成功，但目标窗口只收到 WM_KEYDOWN、没有 WM_CHAR
     //     → 字符不落盘，输入法也组不出词；
@@ -375,6 +476,10 @@ pub fn send_combo(vks: &[u16]) -> Result<()> {
 
 /// 直接注入 Unicode（不经过 IME，用于输入中文等非 ASCII 文本）。
 pub fn send_unicode(ch: char) -> Result<()> {
+    injector_send(KeyCmd::Unicode(ch))
+}
+
+fn raw_send_unicode(ch: char) -> Result<()> {
     let mut buf = [0u16; 2];
     for unit in ch.encode_utf16(&mut buf) {
         send(&[

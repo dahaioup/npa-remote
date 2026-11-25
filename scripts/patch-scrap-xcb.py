@@ -284,11 +284,24 @@ if "xcb_get_image" not in ffi:
         format: u8,
     ) -> xcb_get_image_cookie_t;
 
+    pub fn xcb_get_image_unchecked(
+        c: *mut xcb_connection_t,
+        drawable: xcb_drawable_t,
+        x: i16,
+        y: i16,
+        width: u16,
+        height: u16,
+        plane_mask: u32,
+        format: u8,
+    ) -> xcb_get_image_cookie_t;
+
     pub fn xcb_get_image_reply(
         c: *mut xcb_connection_t,
         cookie: xcb_get_image_cookie_t,
         e: *mut *mut xcb_generic_error_t,
     ) -> *mut xcb_image_t;
+
+    pub fn xcb_get_error(c: *mut xcb_connection_t) -> *mut xcb_generic_error_t;
 
 """
     ffi = ffi.replace(decl_anchor, decl + decl_anchor, 1)
@@ -450,13 +463,33 @@ NON_SHM_HELPERS = """    fn same_bytes(a: &[u8], b: &[u8]) -> bool {
         out: &mut Vec<u8>,
     ) -> bool {
         unsafe {
-            let cookie = xcb_get_image(server, root, x, y, w, h, !0, Self::FORMAT_Z_PIXMAP);
+            // xcb 每条连接只能挂一个待处理错误：此前 shm 请求留下的错误会让
+            // 后续 GetImage 的回复直接返回 NULL。先排空，再发请求。
+            loop {
+                let pending = xcb_get_error(server);
+                if pending.is_null() {
+                    break;
+                }
+                eprintln!(
+                    "NPA: 排空连接上遗留的 xcb 错误 code={} minor={} major={}",
+                    (*pending).error_code as i32,
+                    (*pending).minor_code as i32,
+                    (*pending).major_code as i32
+                );
+                libc::free(pending as *mut libc::c_void);
+            }
+            // 用 unchecked 变体（与 vendored 的 shm 读回同风格），避免 checked
+            // 版本对请求做本地校验后直接返回无效 cookie。
+            let cookie = xcb_get_image_unchecked(server, root, x, y, w, h, !0, Self::FORMAT_Z_PIXMAP);
             let mut err: *mut xcb_generic_error_t = ptr::null_mut();
             let img = xcb_get_image_reply(server, cookie, &mut err);
             if img.is_null() {
                 eprintln!(
-                    "NPA: non-shm XGetImage 无回复 (xcb error code {})",
-                    if err.is_null() { 0 } else { (*err).error_code as i32 }
+                    "NPA: non-shm XGetImage 无回复 (code={} minor={} major={}; 请求 root={} x={} y={} w={} h={} format={})",
+                    if err.is_null() { 0 } else { (*err).error_code as i32 },
+                    if err.is_null() { 0 } else { (*err).minor_code as i32 },
+                    if err.is_null() { 0 } else { (*err).major_code as i32 },
+                    root, x, y, w, h, Self::FORMAT_Z_PIXMAP
                 );
                 if !err.is_null() {
                     libc::free(err as *mut libc::c_void);

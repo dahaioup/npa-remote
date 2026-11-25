@@ -393,7 +393,23 @@ NON_SHM_FRAME = """    pub fn frame<'b>(&'b mut self) -> std::io::Result<&'b [u8
         };
         if self.non_shm || probe_due {
             let rect = self.display.rect();
-            let server = self.display.server().raw();
+            // NPA: non-shm fallback — 用独立连接做非 shm 读回。原连接上可能
+            // 还挂着之前卡住的 shm 请求留下的待处理错误，xcb 会让后续
+            // GetImage 的回复直接返回 NULL（且不附错误对象）。
+            if self.non_shm_conn.is_null()
+                || xcb_connection_has_error(self.non_shm_conn) != 0
+            {
+                if !self.non_shm_conn.is_null() {
+                    xcb_disconnect(self.non_shm_conn);
+                    self.non_shm_conn = std::ptr::null_mut();
+                }
+                self.non_shm_conn = xcb_connect(std::ptr::null(), std::ptr::null_mut());
+            }
+            let server = if self.non_shm_conn.is_null() {
+                self.display.server().raw()
+            } else {
+                self.non_shm_conn
+            };
             let root = self.display.root();
             let size = self.size;
             if Self::fetch_image_non_shm(
@@ -469,10 +485,11 @@ NON_SHM_HELPERS = """    fn same_bytes(a: &[u8], b: &[u8]) -> bool {
             let img = xcb_get_image_reply(server, cookie, &mut err);
             if img.is_null() {
                 eprintln!(
-                    "NPA: non-shm XGetImage 无回复 (code={} minor={} major={}; 请求 root={} x={} y={} w={} h={} format={})",
+                    "NPA: non-shm XGetImage 无回复 (code={} minor={} major={} has_err={}; 请求 root={} x={} y={} w={} h={} format={})",
                     if err.is_null() { 0 } else { (*err).error_code as i32 },
                     if err.is_null() { 0 } else { (*err).minor_code as i32 },
                     if err.is_null() { 0 } else { (*err).major_code as i32 },
+                    xcb_connection_has_error(server),
                     root, x, y, w, h, Self::FORMAT_Z_PIXMAP
                 );
                 if !err.is_null() {
@@ -531,6 +548,9 @@ if "last_shm: Vec<u8>," not in cap:
     non_shm: bool,     // 判定该机器 shm 陈旧 → 之后一直走非 shm 读回
     last_probe: Option<std::time::Instant>,
     non_shm_buf: Vec<u8>, // 非 shm 读回的帧（shm 段只读挂载，不能往里写）
+    // NPA: non-shm fallback — 非 shm 读回用的独立 X 连接：原连接可能被之前
+    // 卡住的 shm 请求留下待处理错误，导致 GetImage 的回复直接返回 NULL。
+    non_shm_conn: *mut xcb_connection_t,
 """
     cap = cap.replace(field_anchor, fields, 1)
 
@@ -545,7 +565,8 @@ if "last_shm: Vec::new()," not in cap:
         + "            stale_hits: 0,\n"
         + "            non_shm: false,\n"
         + "            last_probe: None,\n"
-        + "            non_shm_buf: Vec::new(),\n",
+        + "            non_shm_buf: Vec::new(),\n"
+        + "            non_shm_conn: std::ptr::null_mut(),\n",
         1,
     )
     open(cap_path, "w", encoding="utf-8").write(cap)

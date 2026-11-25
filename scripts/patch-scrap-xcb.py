@@ -273,15 +273,17 @@ if "xcb_get_image" not in ffi:
     if decl_anchor not in ffi:
         sys.exit("ERROR: %s 里找不到 xcb_randr_get_monitors_unchecked 锚点" % ffi_path)
     decl = """    // NPA: non-shm fallback — XGetImage 直取像素（不经过共享内存）。
+    // 真实签名（xcb/xproto.h:10252）：format 紧跟在连接之后，
+    // 不是最后一个参数。顺序错了服务端会回 BadValue。
     pub fn xcb_get_image(
         c: *mut xcb_connection_t,
+        format: u8,
         drawable: xcb_drawable_t,
         x: i16,
         y: i16,
         width: u16,
         height: u16,
         plane_mask: u32,
-        format: u8,
     ) -> xcb_get_image_cookie_t;
 
     pub fn xcb_get_image_unchecked(
@@ -486,7 +488,7 @@ NON_SHM_HELPERS = """    fn same_bytes(a: &[u8], b: &[u8]) -> bool {
                 "NPA: 非 shm 读回 root 几何 {}x{} depth={}（采集尺寸 {}x{}）",
                 gw, gh, gdepth, w, h
             );
-            let cookie = xcb_get_image(server, root, 0, 0, rq_w, rq_h, !0, Self::FORMAT_Z_PIXMAP);
+            let cookie = xcb_get_image(server, Self::FORMAT_Z_PIXMAP, root, 0, 0, rq_w, rq_h, !0);
             let mut err: *mut xcb_generic_error_t = ptr::null_mut();
             let img = xcb_get_image_reply(server, cookie, &mut err);
             if img.is_null() {

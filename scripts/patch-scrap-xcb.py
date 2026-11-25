@@ -468,17 +468,35 @@ NON_SHM_HELPERS = """    fn same_bytes(a: &[u8], b: &[u8]) -> bool {
             // 用 checked 版本 xcb_get_image：已验证它能把服务端的错误
             // （BadValue 等）正常带回，unchecked 版本在本地静态 libxcb 上
             // 会拿到空回复且没有错误对象。
-            let cookie = xcb_get_image(server, root, x, y, w, h, !0, Self::FORMAT_Z_PIXMAP);
+            // GetImage 的矩形必须完整落在 drawable 内，否则服务端回 BadValue。
+            // 先查 root 的真实几何，用它而不是采集尺寸发请求。
+            let geo_cookie = xcb_get_geometry_unchecked(server, root);
+            let mut geo_err: *mut xcb_generic_error_t = ptr::null_mut();
+            let geo = xcb_get_geometry_reply(server, geo_cookie, &mut geo_err);
+            let (gw, gh, gdepth) = if geo.is_null() {
+                (0u16, 0u16, 0u8)
+            } else {
+                let g = &*geo;
+                let t = (g.width, g.height, g.depth);
+                libc::free(geo as *mut libc::c_void);
+                t
+            };
+            let (rq_w, rq_h) = if gw > 0 && gh > 0 { (gw, gh) } else { (w, h) };
+            eprintln!(
+                "NPA: 非 shm 读回 root 几何 {}x{} depth={}（采集尺寸 {}x{}）",
+                gw, gh, gdepth, w, h
+            );
+            let cookie = xcb_get_image(server, root, 0, 0, rq_w, rq_h, !0, Self::FORMAT_Z_PIXMAP);
             let mut err: *mut xcb_generic_error_t = ptr::null_mut();
             let img = xcb_get_image_reply(server, cookie, &mut err);
             if img.is_null() {
                 eprintln!(
-                    "NPA: non-shm XGetImage 无回复 (code={} minor={} major={} has_err={}; 请求 root={} x={} y={} w={} h={} format={})",
+                    "NPA: non-shm XGetImage 无回复 (code={} minor={} major={} has_err={}; 请求 root={} w={} h={} geo={}x{} depth={} format={})",
                     if err.is_null() { 0 } else { (*err).error_code as i32 },
                     if err.is_null() { 0 } else { (*err).minor_code as i32 },
                     if err.is_null() { 0 } else { (*err).major_code as i32 },
                     xcb_connection_has_error(server),
-                    root, x, y, w, h, Self::FORMAT_Z_PIXMAP
+                    root, rq_w, rq_h, gw, gh, gdepth, Self::FORMAT_Z_PIXMAP
                 );
                 if !err.is_null() {
                     libc::free(err as *mut libc::c_void);
@@ -488,27 +506,29 @@ NON_SHM_HELPERS = """    fn same_bytes(a: &[u8], b: &[u8]) -> bool {
             let image = &*img;
             // xcb_image_t::bpp 是「每像素位数」（24 位深通常返回 32），
             // 而 size 是字节数 → 期望 bpp = size * 8 / (w * h)。
-            let expect_bpp = if w as usize * h as usize > 0 {
-                ((size * 8) / (w as usize * h as usize)) as u8
+            let need = rq_w as usize * rq_h as usize * 4;
+            let expect_bpp = if rq_w as usize * rq_h as usize > 0 {
+                ((need * 8) / (rq_w as usize * rq_h as usize)) as u8
             } else {
                 0
             };
             let ok = !image.data.is_null()
-                && image.width as usize == w as usize
-                && image.height as usize == h as usize
+                && image.width as usize == rq_w as usize
+                && image.height as usize == rq_h as usize
                 && image.bpp == expect_bpp
-                && image.size as usize >= size;
+                && image.size as usize >= need;
             if !ok {
                 eprintln!(
                     "NPA: non-shm XGetImage 参数不符：reply w={} h={} bpp={} size={}，期望 w={} h={} bpp={} size={}",
-                    image.width, image.height, image.bpp, image.size, w, h, expect_bpp, size
+                    image.width, image.height, image.bpp, image.size, rq_w, rq_h, expect_bpp, need
                 );
             }
             if ok {
                 // shm 段是只读挂载的，不能往里写 → 独立缓冲区存非 shm 帧。
+                let take = size.min(image.size as usize).min(need);
                 out.clear();
-                out.reserve(size);
-                out.extend_from_slice(slice::from_raw_parts(image.data as *const u8, size));
+                out.reserve(take);
+                out.extend_from_slice(slice::from_raw_parts(image.data as *const u8, take));
             }
             if !image.data.is_null() {
                 libc::free(image.data as *mut libc::c_void);

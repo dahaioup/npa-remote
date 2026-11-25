@@ -14,6 +14,7 @@ use anyhow::{bail, Result};
 extern "system" {
     fn SendInput(c_inputs: u32, p_inputs: *const Input, cb_size: i32) -> u32;
     fn keybd_event(b_vk: u8, b_scan: u8, dw_flags: u32, dw_extra_info: usize);
+    #[allow(dead_code)]
     fn MapVirtualKeyW(u_code: u32, u_map_type: u32) -> u16;
     fn GetSystemMetrics(n_index: i32) -> i32;
     fn GetCursorPos(lp_point: *mut CursorPoint) -> i32;
@@ -83,6 +84,7 @@ const MOUSEEVENTF_MIDDLEDOWN: u32 = 0x0020;
 const MOUSEEVENTF_MIDDLEUP: u32 = 0x0040;
 const MOUSEEVENTF_WHEEL: u32 = 0x0800;
 
+#[allow(dead_code)]
 const MAPVK_VK_TO_VSC: u32 = 0;
 const UOI_NAME: u32 = 2;
 const SM_CXSCREEN: i32 = 0;
@@ -308,8 +310,11 @@ pub fn send_vk(vk: u16, down: bool) -> Result<()> {
     //   - keybd_event 走传统键盘驱动路径，字符与输入法都正常。
     // 所以键盘统一用 keybd_event；SendInput 只保留给鼠标（MOUSEEVENTF_*）。
     //
-    // 扫描码用 MapVirtualKey 从当前键盘布局换算，TSF 输入法靠它识别物理按键。
-    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u8;
+    // 注意 bScan 必须传 0：探针对照实验（158，焦点在 WinForms 文本框）
+    //   keybd_event(vk, 0,    0) → text=[c]   字符正常落盘
+    //   keybd_event(vk, 0x23, 0) → 只有 WM_KEYDOWN，无 WM_CHAR，字符不落盘
+    // 传非零扫描码会让 keybd_event 走扫描码注入路径，TranslateMessage 不再生成字符。
+    let scan = 0u8;
     let flags = if down { 0 } else { KEYEVENTF_KEYUP };
     unsafe { keybd_event(vk as u8, scan, flags, 0) };
     Ok(())

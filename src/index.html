@@ -7,6 +7,10 @@
 // 页面加载后把 IP+版本写进标题，方便多标签页区分
 fetch('/api/info').then(r=>r.json()).then(d=>{
   document.title = `NPA 远程控制 ${d.ip||''} v${d.version||''}`;
+  // 抓帧里已经带系统光标（Windows DXGI / Wayland）就不用自己画
+  if (d.cursor_in_frame===true && document.getElementById('curOn')) {
+    document.getElementById('curOn').checked = false;
+  }
 }).catch(()=>{});
 </script>
 <style>
@@ -16,6 +20,8 @@ fetch('/api/info').then(r=>r.json()).then(d=>{
   input,button,select{background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:4px;padding:4px 8px}
   button{cursor:pointer}
   #view{display:block;width:100%;flex:1;min-height:0;object-fit:contain;cursor:crosshair;touch-action:none}
+  /* 光标叠加层：X11/macOS 抓帧里没有鼠标指针（指针是系统单独画的），这里自己画一个 */
+  #cur{position:absolute;left:0;top:0;pointer-events:none;z-index:9;display:none}
   #status{margin-left:auto;font-size:12px;color:#8a8;white-space:nowrap}
   #clip{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8a8;font-size:12px}
 </style>
@@ -28,6 +34,7 @@ fetch('/api/info').then(r=>r.json()).then(d=>{
   <label>分辨率 <select id="scale"><option value="100" selected>100%</option><option value="90">90%</option><option value="70">70%</option><option value="50">50%</option></select></label>
   <label>帧率 <select id="fps"><option>1</option><option>5</option><option selected>10</option><option>20</option><option>30</option></select></label>
   <label>编码 <select id="codec" title="自动=VP8 优先，失败降级 JPEG"><option value="0" selected>自动</option><option value="1">VP8</option><option value="2">JPEG</option></select></label>
+  <label title="画面里没有系统光标时（X11/macOS），由页面绘制一个指针">光标 <input type="checkbox" id="curOn" checked></label>
   <input id="text" placeholder="输入文字回车发送" size="28">
   <input id="combo" placeholder="组合键 如 ctrl+v" size="12">
   <button id="btnClipSet">复制选中→剪贴板</button>
@@ -37,8 +44,14 @@ fetch('/api/info').then(r=>r.json()).then(d=>{
   <span id="status">未连接</span>
 </div>
 <canvas id="view"></canvas>
+<canvas id="cur"></canvas>
 <script>
 const view = document.getElementById('view'), ctx = view.getContext('2d');
+const cur = document.getElementById('cur'), cctx = cur.getContext('2d');
+const curOn = document.getElementById('curOn');
+// 光标叠加层：X11/macOS 抓帧里没有系统指针（指针是系统单独画的，不在 framebuffer 里），
+// 页面自己画一个，否则用户看不到鼠标在哪 → 以为没反应 → 反复点 → 被识别成双击。
+let curPos = null;   // 帧像素坐标（与 view.width/height 同一坐标系）
 const status = document.getElementById('status');
 let ws, scale = 1;
 // 状态栏：连接 + 编码 + 分辨率 + 延迟 + 停止态 + 鼠标 + 屏幕
@@ -78,6 +91,7 @@ function onFrame(source, capTs, isKey){
     if (isKey) meta.lat = Math.max(0, Math.round(Date.now()+clockOffset-capTs));
   }
   renderStatus();
+  drawCursor();
 }
 function handleBinary(buf){
   if (buf.byteLength < 14) return;
@@ -146,7 +160,7 @@ function connect(){
   };
 }
 connect();
-setInterval(()=>send({t:'pos'}), 3000);
+setInterval(()=>send({t:'pos'}), 1000);
 // 每秒 ping 一次：用 server_ts 估本机↔服务端时钟偏移（帧延迟计算用，不是网络延迟）
 setInterval(()=>send({t:'ping',ts:Date.now()}), 1000);
 
@@ -165,12 +179,63 @@ function toScreen(e){
     y: Math.max(0, Math.min(view.height - 1, Math.round(ly / dh * view.height)))
   };
 }
-view.addEventListener('mousemove', e=>{ const p=toScreen(e); if(p) send({t:'move',x:p.x,y:p.y}); });
+// 帧像素 → 页面 CSS 像素（object-fit:contain 的 letterbox 感知，与 toScreen 互逆）
+function frameToCss(fx, fy){
+  if(!view.width || !view.height) return null;
+  const r = view.getBoundingClientRect();
+  const ia = view.width / view.height;
+  let dw = r.width, dh = r.width / ia;
+  if (dh > r.height) { dh = r.height; dw = r.height * ia; }
+  const ox = (r.width - dw) / 2, oy = (r.height - dh) / 2;
+  const k = dw / view.width;
+  return { x: r.left + ox + fx * k, y: r.top + oy + fy * k, k };
+}
+// 画一个指针叠加层（X11/macOS 抓帧不含系统光标时使用）
+function drawCursor(){
+  if(!cur) return;
+  if(!curPos || !curOn || !curOn.checked){ cur.style.display='none'; return; }
+  const p = frameToCss(curPos.x, curPos.y);
+  if(!p){ cur.style.display='none'; return; }
+  const r = view.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  cur.style.display='block';
+  cur.style.left = r.left + 'px';
+  cur.style.top = r.top + 'px';
+  cur.style.width = r.width + 'px';
+  cur.style.height = r.height + 'px';
+  if(cur.width !== Math.round(r.width*dpr) || cur.height !== Math.round(r.height*dpr)){
+    cur.width = Math.round(r.width*dpr); cur.height = Math.round(r.height*dpr);
+  }
+  cctx.setTransform(dpr,0,0,dpr,0,0);
+  cctx.clearRect(0,0,r.width,r.height);
+  const s = Math.max(12, Math.min(30, p.k*15));   // 箭头大小随缩放，但保持屏幕观感一致
+  const x = p.x - r.left, y = p.y - r.top;
+  cctx.beginPath();
+  cctx.moveTo(x, y);
+  cctx.lineTo(x + s*0.72, y + s*0.88);
+  cctx.lineTo(x + s*0.34, y + s*0.84);
+  cctx.lineTo(x + s*0.56, y + s*1.30);
+  cctx.lineTo(x + s*0.30, y + s*1.46);
+  cctx.lineTo(x + s*0.08, y + s*1.00);
+  cctx.lineTo(x, y + s*1.06);
+  cctx.closePath();
+  cctx.fillStyle = '#ffffff';
+  cctx.strokeStyle = '#000000';
+  cctx.lineWidth = 1.5;
+  cctx.fill(); cctx.stroke();
+}
+if(curOn) curOn.addEventListener('change', drawCursor);
+window.addEventListener('resize', drawCursor);
+view.addEventListener('mousemove', e=>{
+  const p=toScreen(e);
+  if(p){ curPos={x:p.x,y:p.y}; drawCursor(); send({t:'move',x:p.x,y:p.y}); }
+});
 // mousedown/mouseup 分离：支持拖选、拖窗口（按住移动 vs 单击）
 let dragging = false;
 view.addEventListener('mousedown', e=>{
   e.preventDefault();
   const p=toScreen(e); if(!p) return;
+  curPos={x:p.x,y:p.y}; drawCursor();
   dragging = true;
   const btn = e.button===2 ? 'right' : e.button===1 ? 'middle' : 'left';
   send({t:'down',x:p.x,y:p.y,button:btn,mods:modsOf(e)});

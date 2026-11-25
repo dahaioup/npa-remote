@@ -117,7 +117,36 @@ async fn api_info() -> axum::response::Json<serde_json::Value> {
         "ip": ips.first().cloned().unwrap_or_default(),
         "ips": ips,
         "version": env!("CARGO_PKG_VERSION"),
+        // 抓到的画面里是否已经带鼠标指针。前端据此决定要不要自己画一个光标：
+        // X11 抓的是 framebuffer，光标是 X server 单独画的 sprite → 不在里面；
+        // macOS CGDisplay 抓帧也不含光标；Windows DXGI 与 Wayland 合成器输出含光标。
+        "cursor_in_frame": cursor_in_frame(),
     }))
+}
+
+/// 抓帧里是否已经包含鼠标指针（见 api_info 注释）。
+#[cfg(target_os = "windows")]
+fn cursor_in_frame() -> bool {
+    // DXGI Desktop Duplication 默认把光标烧进帧里
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn cursor_in_frame() -> bool {
+    // CGDisplayCreateImage 抓的是显示缓冲区，光标不在里面
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn cursor_in_frame() -> bool {
+    // X11：framebuffer 里没有光标（X server 用独立 sprite 画）
+    // Wayland：合成器输出的是最终画面，带光标
+    std::env::var("WAYLAND_DISPLAY").is_ok()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn cursor_in_frame() -> bool {
+    false
 }
 
 async fn ws_upgrade(ws: WebSocketUpgrade) -> axum::response::Response {

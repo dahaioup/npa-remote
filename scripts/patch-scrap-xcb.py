@@ -464,8 +464,10 @@ NON_SHM_HELPERS = """    fn same_bytes(a: &[u8], b: &[u8]) -> bool {
                 return false;
             }
             let image = &*img;
+            // xcb_image_t::bpp 是「每像素位数」（24 位深通常返回 32），
+            // 而 size 是字节数 → 期望 bpp = size * 8 / (w * h)。
             let expect_bpp = if w as usize * h as usize > 0 {
-                (size / (w as usize * h as usize)) as u8
+                ((size * 8) / (w as usize * h as usize)) as u8
             } else {
                 0
             };
@@ -532,13 +534,13 @@ if "last_shm: Vec::new()," not in cap:
     open(cap_path, "w", encoding="utf-8").write(cap)
     print("patched %s（非 shm 字段初始化）" % cap_path)
 
-if "const FORMAT_Z_PIXMAP: u8 = 0;" not in cap:
+if "const FORMAT_Z_PIXMAP: u8 = 2;" not in cap:
     const_anchor = "impl Capturer {\n"
     if const_anchor not in cap:
         sys.exit("ERROR: %s 里找不到 impl Capturer 锚点" % cap_path)
     consts = const_anchor + """    // NPA: non-shm fallback — xcb_get_image 的标准 ZPixmap 格式值
-    // （xcb/xproto.h: XCB_IMAGE_FORMAT_Z_PIXMAP = 0）。
-    const FORMAT_Z_PIXMAP: u8 = 0;
+    // （xcb/xproto.h: XCB_IMAGE_FORMAT_Z_PIXMAP = 2；XYBitmap=0、XYPixmap=1、ZPixmap=2）。
+    const FORMAT_Z_PIXMAP: u8 = 2;
     // NPA: 非 shm 探测的最小间隔（ms）——静态桌面时不必每帧都做一次昂贵的
     // 协议读回；1000ms 一次 ≈ 每秒 40ms 额外开销。
     const NON_SHM_PROBE_INTERVAL_MS: u64 = 1000;

@@ -333,19 +333,35 @@ else:
 FRAME_MARKER = "NPA: non-shm fallback — shm 内容是否变化"
 
 NON_SHM_FRAME = """    pub fn frame<'b>(&'b mut self) -> std::io::Result<&'b [u8]> {
-        self.get_image();
-
-        // NPA: non-shm fallback — shm 内容是否变化，要跟「上一次 shm 读回」比，
-        // 而不是跟「已返回的帧」比：无显示输出时 shm 恒为陈旧帧，跟已返回帧比
-        // 会把同一张陈旧帧当成新帧推出去。
-        let (had_prev, shm_changed) = {
-            let shm = unsafe { slice::from_raw_parts(self.buffer, self.size) };
-            let had_prev = !self.last_shm.is_empty();
-            let changed = had_prev && !Self::same_bytes(shm, &self.last_shm);
-            self.last_shm.clear();
-            self.last_shm.extend_from_slice(shm);
-            (had_prev, changed)
-        };
+        // NPA: 给 shm 读回计时。没有连接任何显示输出的机器上，X server 的 shm
+        // GetImage 回复要等到下一次 present 才送达 → 这里会阻塞数秒（实测 ~4s），
+        // 表现为远控只有 0.2 fps、鼠标一动画面不动。读回一旦超时，就永久切到
+        // 非 shm 的 XGetImage 读回（它不依赖 present，能立刻拿到当前画面）。
+        let mut had_prev = false;
+        let mut shm_changed = false;
+        if !self.non_shm {
+            let __npa_t0 = std::time::Instant::now();
+            self.get_image();
+            let __npa_shm_ms = __npa_t0.elapsed().as_millis() as u64;
+            if __npa_shm_ms > 150 {
+                // 已经切到非 shm：之后每次 frame() 都不再走 shm 读回（否则每帧
+                // 都要阻塞数秒）。
+                self.non_shm = true;
+                eprintln!(
+                    "NPA: shm 读回耗时 {}ms（疑似无 present）→ 切换非 shm 读回",
+                    __npa_shm_ms
+                );
+            } else {
+                // NPA: non-shm fallback — shm 内容是否变化，要跟「上一次 shm 读回」比，
+                // 而不是跟「已返回的帧」比：无显示输出时 shm 恒为陈旧帧，跟已返回帧比
+                // 会把同一张陈旧帧当成新帧推出去。
+                let shm = unsafe { slice::from_raw_parts(self.buffer, self.size) };
+                had_prev = !self.last_shm.is_empty();
+                shm_changed = had_prev && !Self::same_bytes(shm, &self.last_shm);
+                self.last_shm.clear();
+                self.last_shm.extend_from_slice(shm);
+            }
+        }
 
         // 快路：shm 有新内容 → 有显示器的桌面走这里（无额外开销）。
         if shm_changed && !self.non_shm {

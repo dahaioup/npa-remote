@@ -304,7 +304,7 @@ if "xcb_get_image" not in ffi:
     ) -> *mut xcb_get_image_reply_t;
     // 像素数据不在 reply 结构里，而是紧随其后；用这两个取。
     pub fn xcb_get_image_data(r: *const xcb_get_image_reply_t) -> *mut u8;
-    pub fn xcb_get_image_data_length(r: *const xcb_get_image_reply_t) -> libc::c_int;
+    pub fn xcb_get_image_data_length(r: *const xcb_get_image_reply_t) -> core::ffi::c_int;
 
 
 """

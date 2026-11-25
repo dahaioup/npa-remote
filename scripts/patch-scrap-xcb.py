@@ -249,3 +249,267 @@ else:
         it = it.replace(old, new, 1)
     open(iter_path, "w", encoding="utf-8").write(it)
     print("patched %s（RandR 根窗口兜底）" % iter_path)
+
+# ============================================================================
+# 4. 非 shm 读回兜底（无显示输出的机器上，shm 读回恒为陈旧帧）
+# ============================================================================
+# 背景：机器没接任何显示输出时（GPU 从不 present），X 服务器把画面复制到共享
+# 内存的动作不会发生 —— 实测根窗口底色红→蓝，shm 抓图 md5 完全相同，只有非
+# shm 的按需读回（xwd）能看到新内容。受影响的不只是 scrap：依赖 present/损伤
+# 事件的 x11vnc 同样饿死（画面冻结）。上游 scrap 的 frame() 只比较「已返回帧」
+# 与「本次 shm 读回」，在 shm 恒定时会把陈旧帧当成新帧推出去。
+#
+# 这里改成：
+#   * 记录上一次 shm 读回的内容，区分「屏幕真没变」与「shm 陈旧」；
+#   * shm 没变化时，用非 shm 的 XGetImage（xcb_get_image）读一次确认；
+#   * 若非 shm 内容变了而 shm 没变 → 判定该机器 shm 陈旧，之后一直走非 shm。
+# 对有显示器的桌面，快路命中，无任何额外开销。
+
+NON_SHM_MARKER = "NPA: non-shm fallback"
+
+# --- 4.1 ffi.rs：xcb_get_image / xcb_get_image_reply 声明与结构 ---
+if "xcb_get_image" not in ffi:
+    decl_anchor = "    pub fn xcb_randr_get_monitors_unchecked(\n"
+    if decl_anchor not in ffi:
+        sys.exit("ERROR: %s 里找不到 xcb_randr_get_monitors_unchecked 锚点" % ffi_path)
+    decl = """    // NPA: non-shm fallback — XGetImage 直取像素（不经过共享内存）。
+    pub fn xcb_get_image(
+        c: *mut xcb_connection_t,
+        drawable: xcb_drawable_t,
+        x: i16,
+        y: i16,
+        width: u16,
+        height: u16,
+        plane_mask: u32,
+        format: u8,
+    ) -> xcb_get_image_cookie_t;
+
+    pub fn xcb_get_image_reply(
+        c: *mut xcb_connection_t,
+        cookie: xcb_get_image_cookie_t,
+        e: *mut *mut xcb_generic_error_t,
+    ) -> *mut xcb_image_t;
+
+"""
+    ffi = ffi.replace(decl_anchor, decl + decl_anchor, 1)
+    open(ffi_path, "w", encoding="utf-8").write(ffi)
+    print("patched %s（xcb_get_image 声明）" % ffi_path)
+else:
+    print("ffi.rs 已有 xcb_get_image 声明，跳过")
+
+if "pub struct xcb_image_t" not in ffi:
+    struct_anchor = "#[repr(C)]\npub struct xcb_generic_error_t {"
+    if struct_anchor not in ffi:
+        sys.exit("ERROR: %s 里找不到 xcb_generic_error_t 锚点" % ffi_path)
+    structs = """// NPA: non-shm fallback — xcb_get_image 的 cookie 与图像结构（xcb/xproto.h）。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct xcb_get_image_cookie_t {
+    pub sequence: u32,
+}
+
+#[repr(C)]
+pub struct xcb_image_t {
+    pub width: u16,
+    pub height: u16,
+    pub x: i16,
+    pub y: i16,
+    pub depth: u8,
+    pub bpp: u8,
+    pub pad: u8,
+    pub data: *mut c_void,
+    pub size: u32,
+}
+
+"""
+    ffi = ffi.replace(struct_anchor, structs + struct_anchor, 1)
+    open(ffi_path, "w", encoding="utf-8").write(ffi)
+    print("patched %s（xcb_image_t 结构）" % ffi_path)
+else:
+    print("ffi.rs 已有 xcb_image_t 结构，跳过")
+
+# --- 4.2 capturer.rs：字段 + 常量 + 新的 frame() ---
+cap = open(cap_path, encoding="utf-8").read()
+if NON_SHM_MARKER not in cap:
+    field_anchor = "    saved_raw_data: Vec<u8>, // for faster compare and copy\n"
+    if field_anchor not in cap:
+        sys.exit("ERROR: %s 里找不到 saved_raw_data 锚点" % cap_path)
+    fields = field_anchor + """
+    // NPA: non-shm fallback —— 记录上一次 shm 读回的内容，用来区分
+    // 「屏幕真的没变」和「shm 陈旧（无显示输出）」两种情况。
+    last_shm: Vec<u8>,
+    stale_hits: u32,   // 连续多少次「shm 没变但非 shm 变了」
+    non_shm: bool,     // 判定该机器 shm 陈旧 → 之后一直走非 shm 读回
+    last_probe: Option<std::time::Instant>,
+    non_shm_buf: Vec<u8>, // 非 shm 读回的帧（shm 段只读挂载，不能往里写）
+"""
+    cap = cap.replace(field_anchor, fields, 1)
+
+    init_anchor = "            saved_raw_data: Vec::new(),\n"
+    if init_anchor not in cap:
+        sys.exit("ERROR: %s 里找不到 saved_raw_data 初始化锚点" % cap_path)
+    cap = cap.replace(
+        init_anchor,
+        init_anchor
+        + "            last_shm: Vec::new(),\n"
+        + "            stale_hits: 0,\n"
+        + "            non_shm: false,\n"
+        + "            last_probe: None,\n"
+        + "            non_shm_buf: Vec::new(),\n",
+        1,
+    )
+
+    const_anchor = "impl Capturer {\n"
+    if const_anchor not in cap:
+        sys.exit("ERROR: %s 里找不到 impl Capturer 锚点" % cap_path)
+    consts = const_anchor + """    // NPA: non-shm fallback — xcb_get_image 的标准 ZPixmap 格式值
+    // （xcb/xproto.h: XCB_IMAGE_FORMAT_Z_PIXMAP = 0）。
+    const FORMAT_Z_PIXMAP: u8 = 0;
+    // NPA: 非 shm 探测的最小间隔（ms）——静态桌面时不必每帧都做一次昂贵的
+    // 协议读回；1000ms 一次 ≈ 每秒 40ms 额外开销。
+    const NON_SHM_PROBE_INTERVAL_MS: u64 = 1000;
+
+"""
+    cap = cap.replace(const_anchor, consts, 1)
+
+    # 替换整个 frame()（按大括号配平定位函数末尾）
+    frame_header = "    pub fn frame<'b>(&'b mut self) -> std::io::Result<&'b [u8]> {"
+    if frame_header not in cap:
+        sys.exit("ERROR: %s 里找不到 frame() 锚点" % cap_path)
+    start = cap.index(frame_header)
+    depth = 0
+    end = None
+    for j in range(start, len(cap)):
+        if cap[j] == "{":
+            depth += 1
+        elif cap[j] == "}":
+            depth -= 1
+            if depth == 0:
+                end = j
+                break
+    if end is None:
+        sys.exit("ERROR: %s 里 frame() 的大括号没配平" % cap_path)
+    new_frame = """    pub fn frame<'b>(&'b mut self) -> std::io::Result<&'b [u8]> {
+        self.get_image();
+
+        // NPA: non-shm fallback — shm 内容是否变化，要跟「上一次 shm 读回」比，
+        // 而不是跟「已返回的帧」比：无显示输出时 shm 恒为陈旧帧，跟已返回帧比
+        // 会把同一张陈旧帧当成新帧推出去。
+        let (had_prev, shm_changed) = {
+            let shm = unsafe { slice::from_raw_parts(self.buffer, self.size) };
+            let had_prev = !self.last_shm.is_empty();
+            let changed = had_prev && !Self::same_bytes(shm, &self.last_shm);
+            self.last_shm.clear();
+            self.last_shm.extend_from_slice(shm);
+            (had_prev, changed)
+        };
+
+        // 快路：shm 有新内容 → 有显示器的桌面走这里（无额外开销）。
+        if shm_changed && !self.non_shm {
+            let shm = unsafe { slice::from_raw_parts(self.buffer, self.size) };
+            if !Self::same_bytes(shm, &self.saved_raw_data) {
+                self.saved_raw_data.clear();
+                self.saved_raw_data.extend_from_slice(shm);
+            }
+            return Ok(shm);
+        }
+
+        // shm 没变化 → 可能是「屏幕真没变」，也可能是 shm 陈旧（无显示输出）。
+        // 用非 shm 的 XGetImage 再读一次确认。
+        let probe_due = match self.last_probe {
+            None => true,
+            Some(t) => t.elapsed().as_millis() as u64 >= Self::NON_SHM_PROBE_INTERVAL_MS,
+        };
+        if self.non_shm || probe_due {
+            let rect = self.display.rect();
+            let server = self.display.server().raw();
+            let root = self.display.root();
+            let size = self.size;
+            if Self::fetch_image_non_shm(
+                server,
+                root,
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                size,
+                &mut self.non_shm_buf,
+            ) {
+                let fresh_changed = !Self::same_bytes(&self.non_shm_buf, &self.saved_raw_data);
+                if fresh_changed {
+                    // 屏幕变了，但 shm 一直没变 → 这台机器的 shm 读回是陈旧帧。
+                    if had_prev && !shm_changed {
+                        self.stale_hits += 1;
+                        if self.stale_hits >= 2 {
+                            self.non_shm = true;
+                        }
+                    }
+                    self.last_probe = Some(std::time::Instant::now());
+                    self.saved_raw_data.clear();
+                    self.saved_raw_data.extend_from_slice(&self.non_shm_buf);
+                    return Ok(&self.non_shm_buf);
+                }
+                self.last_probe = Some(std::time::Instant::now());
+                return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            }
+        }
+
+        // 非 shm 读回不可用 → 退回原有 shm 语义。
+        let shm = unsafe { slice::from_raw_parts(self.buffer, self.size) };
+        if !Self::same_bytes(shm, &self.saved_raw_data) {
+            self.saved_raw_data.clear();
+            self.saved_raw_data.extend_from_slice(shm);
+            return Ok(shm);
+        }
+        Err(io::Error::from(io::ErrorKind::WouldBlock))
+    }
+
+    /// NPA: non-shm fallback — 比较两段像素是否完全一致。
+    fn same_bytes(a: &[u8], b: &[u8]) -> bool {
+        a.len() == b.len() && (a.is_empty() || a == b)
+    }
+
+    /// NPA: non-shm fallback — 通过 X 协议读回整屏像素，写入 out。
+    ///
+    /// 做成关联函数（不借用 self）：frame() 里同时持有 self 的字段借用
+    /// （non_shm_buf / saved_raw_data），整块 &mut self 借用会与它们冲突。
+    #[allow(clippy::too_many_arguments)]
+    fn fetch_image_non_shm(
+        server: *mut xcb_connection_t,
+        root: xcb_drawable_t,
+        x: i16,
+        y: i16,
+        w: u16,
+        h: u16,
+        size: usize,
+        out: &mut Vec<u8>,
+    ) -> bool {
+        unsafe {
+            let cookie = xcb_get_image(server, root, x, y, w, h, !0, Self::FORMAT_Z_PIXMAP);
+            let img = xcb_get_image_reply(server, cookie, ptr::null_mut());
+            if img.is_null() {
+                return false;
+            }
+            let image = &*img;
+            let ok = !image.data.is_null()
+                && image.size as usize == size
+                && image.width as usize == w as usize
+                && image.height as usize == h as usize;
+            if ok {
+                // shm 段是只读挂载的，不能往里写 → 独立缓冲区存非 shm 帧。
+                out.clear();
+                out.reserve(size);
+                out.extend_from_slice(slice::from_raw_parts(image.data as *const u8, size));
+            }
+            if !image.data.is_null() {
+                libc::free(image.data as *mut libc::c_void);
+            }
+            libc::free(img as *mut libc::c_void);
+            ok
+        }
+    }"""
+    cap = cap[:start] + new_frame + cap[end + 1:]
+    open(cap_path, "w", encoding="utf-8").write(cap)
+    print("patched %s（非 shm 读回兜底）" % cap_path)
+else:
+    print("capturer.rs 已有非 shm 兜底，跳过")

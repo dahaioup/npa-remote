@@ -301,7 +301,10 @@ if "xcb_get_image" not in ffi:
         c: *mut xcb_connection_t,
         cookie: xcb_get_image_cookie_t,
         e: *mut *mut xcb_generic_error_t,
-    ) -> *mut xcb_image_t;
+    ) -> *mut xcb_get_image_reply_t;
+    // 像素数据不在 reply 结构里，而是紧随其后；用这两个取。
+    pub fn xcb_get_image_data(r: *const xcb_get_image_reply_t) -> *mut u8;
+    pub fn xcb_get_image_data_length(r: *const xcb_get_image_reply_t) -> libc::c_int;
 
 
 """
@@ -311,7 +314,7 @@ if "xcb_get_image" not in ffi:
 else:
     print("ffi.rs 已有 xcb_get_image 声明，跳过")
 
-if "pub struct xcb_image_t" not in ffi:
+if "pub struct xcb_get_image_reply_t" not in ffi:
     struct_anchor = "#[repr(C)]\npub struct xcb_generic_error_t {"
     if struct_anchor not in ffi:
         sys.exit("ERROR: %s 里找不到 xcb_generic_error_t 锚点" % ffi_path)
@@ -323,24 +326,21 @@ pub struct xcb_get_image_cookie_t {
 }
 
 #[repr(C)]
-pub struct xcb_image_t {
-    pub width: u16,
-    pub height: u16,
-    pub x: i16,
-    pub y: i16,
+pub struct xcb_get_image_reply_t {
+    pub response_type: u8,
     pub depth: u8,
-    pub bpp: u8,
-    pub pad: u8,
-    pub data: *mut c_void,
-    pub size: u32,
+    pub sequence: u16,
+    pub length: u32,
+    pub visual: u32,
+    pub pad0: [u8; 20],
 }
 
 """
     ffi = ffi.replace(struct_anchor, structs + struct_anchor, 1)
     open(ffi_path, "w", encoding="utf-8").write(ffi)
-    print("patched %s（xcb_image_t 结构）" % ffi_path)
+    print("patched %s（xcb_get_image_reply_t 结构）" % ffi_path)
 else:
-    print("ffi.rs 已有 xcb_image_t 结构，跳过")
+    print("ffi.rs 已有 xcb_get_image_reply_t 结构，跳过")
 
 # --- 4.2 capturer.rs：字段 + 常量 + 新的 frame() ---
 # 幂等标记放在 frame() 内部（字段注释在别处，先打上字段标记会让整段被跳过）。
@@ -505,41 +505,26 @@ NON_SHM_HELPERS = """    fn same_bytes(a: &[u8], b: &[u8]) -> bool {
                 }
                 return false;
             }
-            let image = &*img;
-            // xcb_image_t::bpp 是「每像素位数」（24 位深通常返回 32），
-            // 而 size 是字节数 → 期望 bpp = size * 8 / (w * h)。
-            let need = rq_w as usize * rq_h as usize * 4;
-            let expect_bpp = if rq_w as usize * rq_h as usize > 0 {
-                ((need * 8) / (rq_w as usize * rq_h as usize)) as u8
-            } else {
-                0
-            };
-            let ok = !image.data.is_null()
-                && image.width as usize == rq_w as usize
-                && image.height as usize == rq_h as usize
-                && image.bpp == expect_bpp
-                && image.size as usize >= need;
-            if !ok {
+            let reply = &*img;
+            let depth = reply.depth;
+            let data = xcb_get_image_data(img);
+            let len = xcb_get_image_data_length(img) as usize;
+            let expect = rq_w as usize * rq_h as usize;
+            let bpp = if expect > 0 { (len * 8) / expect } else { 0 };
+            if data.is_null() || len < expect * 3 {
                 eprintln!(
-                    "NPA: non-shm XGetImage 参数不符：reply w={} h={} bpp={} size={}，期望 w={} h={} bpp={} size={}",
-                    image.width, image.height, image.bpp, image.size, rq_w, rq_h, expect_bpp, need
+                    "NPA: non-shm XGetImage 数据异常：len={} bpp={} depth={}，期望至少 {} 字节（{}x{}）",
+                    len, bpp, depth, expect * 3, rq_w, rq_h
                 );
+                libc::free(img as *mut libc::c_void);
+                return false;
             }
-            if ok {
-                // shm 段是只读挂载的，不能往里写 → 独立缓冲区存非 shm 帧。
-                let take = size.min(image.size as usize).min(need);
-                out.clear();
-                out.reserve(take);
-                out.extend_from_slice(slice::from_raw_parts(image.data as *const u8, take));
-            }
-            if !image.data.is_null() {
-                libc::free(image.data as *mut libc::c_void);
-            }
+            let take = size.min(len);
+            out.clear();
+            out.reserve(take);
+            out.extend_from_slice(slice::from_raw_parts(data as *const u8, take));
             libc::free(img as *mut libc::c_void);
-            if !err.is_null() {
-                libc::free(err as *mut libc::c_void);
-            }
-            ok
+            return true;
         }
 
     }"""

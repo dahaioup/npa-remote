@@ -329,67 +329,10 @@ else:
     print("ffi.rs 已有 xcb_image_t 结构，跳过")
 
 # --- 4.2 capturer.rs：字段 + 常量 + 新的 frame() ---
-cap = open(cap_path, encoding="utf-8").read()
-if NON_SHM_MARKER not in cap:
-    field_anchor = "    saved_raw_data: Vec<u8>, // for faster compare and copy\n"
-    if field_anchor not in cap:
-        sys.exit("ERROR: %s 里找不到 saved_raw_data 锚点" % cap_path)
-    fields = field_anchor + """
-    // NPA: non-shm fallback —— 记录上一次 shm 读回的内容，用来区分
-    // 「屏幕真的没变」和「shm 陈旧（无显示输出）」两种情况。
-    last_shm: Vec<u8>,
-    stale_hits: u32,   // 连续多少次「shm 没变但非 shm 变了」
-    non_shm: bool,     // 判定该机器 shm 陈旧 → 之后一直走非 shm 读回
-    last_probe: Option<std::time::Instant>,
-    non_shm_buf: Vec<u8>, // 非 shm 读回的帧（shm 段只读挂载，不能往里写）
-"""
-    cap = cap.replace(field_anchor, fields, 1)
+# 幂等标记放在 frame() 内部（字段注释在别处，先打上字段标记会让整段被跳过）。
+FRAME_MARKER = "NPA: non-shm fallback — shm 内容是否变化"
 
-    init_anchor = "            saved_raw_data: Vec::new(),\n"
-    if init_anchor not in cap:
-        sys.exit("ERROR: %s 里找不到 saved_raw_data 初始化锚点" % cap_path)
-    cap = cap.replace(
-        init_anchor,
-        init_anchor
-        + "            last_shm: Vec::new(),\n"
-        + "            stale_hits: 0,\n"
-        + "            non_shm: false,\n"
-        + "            last_probe: None,\n"
-        + "            non_shm_buf: Vec::new(),\n",
-        1,
-    )
-
-    const_anchor = "impl Capturer {\n"
-    if const_anchor not in cap:
-        sys.exit("ERROR: %s 里找不到 impl Capturer 锚点" % cap_path)
-    consts = const_anchor + """    // NPA: non-shm fallback — xcb_get_image 的标准 ZPixmap 格式值
-    // （xcb/xproto.h: XCB_IMAGE_FORMAT_Z_PIXMAP = 0）。
-    const FORMAT_Z_PIXMAP: u8 = 0;
-    // NPA: 非 shm 探测的最小间隔（ms）——静态桌面时不必每帧都做一次昂贵的
-    // 协议读回；1000ms 一次 ≈ 每秒 40ms 额外开销。
-    const NON_SHM_PROBE_INTERVAL_MS: u64 = 1000;
-
-"""
-    cap = cap.replace(const_anchor, consts, 1)
-
-    # 替换整个 frame()（按大括号配平定位函数末尾）
-    frame_header = "    pub fn frame<'b>(&'b mut self) -> std::io::Result<&'b [u8]> {"
-    if frame_header not in cap:
-        sys.exit("ERROR: %s 里找不到 frame() 锚点" % cap_path)
-    start = cap.index(frame_header)
-    depth = 0
-    end = None
-    for j in range(start, len(cap)):
-        if cap[j] == "{":
-            depth += 1
-        elif cap[j] == "}":
-            depth -= 1
-            if depth == 0:
-                end = j
-                break
-    if end is None:
-        sys.exit("ERROR: %s 里 frame() 的大括号没配平" % cap_path)
-    new_frame = """    pub fn frame<'b>(&'b mut self) -> std::io::Result<&'b [u8]> {
+NON_SHM_FRAME = """    pub fn frame<'b>(&'b mut self) -> std::io::Result<&'b [u8]> {
         self.get_image();
 
         // NPA: non-shm fallback — shm 内容是否变化，要跟「上一次 shm 读回」比，
@@ -443,6 +386,12 @@ if NON_SHM_MARKER not in cap:
                         if self.stale_hits >= 2 {
                             self.non_shm = true;
                         }
+                        eprintln!(
+                            "NPA: shm 陈旧确认（第 {} 次），之后固定走非 shm 读回",
+                            self.stale_hits
+                        );
+                    } else {
+                        eprintln!("NPA: 非 shm 读回拿到新画面（shm 未变）");
                     }
                     self.last_probe = Some(std::time::Instant::now());
                     self.saved_raw_data.clear();
@@ -463,9 +412,9 @@ if NON_SHM_MARKER not in cap:
         }
         Err(io::Error::from(io::ErrorKind::WouldBlock))
     }
+"""
 
-    /// NPA: non-shm fallback — 比较两段像素是否完全一致。
-    fn same_bytes(a: &[u8], b: &[u8]) -> bool {
+NON_SHM_HELPERS = """    fn same_bytes(a: &[u8], b: &[u8]) -> bool {
         a.len() == b.len() && (a.is_empty() || a == b)
     }
 
@@ -486,15 +435,35 @@ if NON_SHM_MARKER not in cap:
     ) -> bool {
         unsafe {
             let cookie = xcb_get_image(server, root, x, y, w, h, !0, Self::FORMAT_Z_PIXMAP);
-            let img = xcb_get_image_reply(server, cookie, ptr::null_mut());
+            let mut err: *mut xcb_generic_error_t = ptr::null_mut();
+            let img = xcb_get_image_reply(server, cookie, &mut err);
             if img.is_null() {
+                eprintln!(
+                    "NPA: non-shm XGetImage 无回复 (xcb error code {})",
+                    if err.is_null() { 0 } else { (*err).error_code as i32 }
+                );
+                if !err.is_null() {
+                    libc::free(err as *mut libc::c_void);
+                }
                 return false;
             }
             let image = &*img;
+            let expect_bpp = if w as usize * h as usize > 0 {
+                (size / (w as usize * h as usize)) as u8
+            } else {
+                0
+            };
             let ok = !image.data.is_null()
-                && image.size as usize == size
                 && image.width as usize == w as usize
-                && image.height as usize == h as usize;
+                && image.height as usize == h as usize
+                && image.bpp == expect_bpp
+                && image.size as usize >= size;
+            if !ok {
+                eprintln!(
+                    "NPA: non-shm XGetImage 参数不符：reply w={} h={} bpp={} size={}，期望 w={} h={} bpp={} size={}",
+                    image.width, image.height, image.bpp, image.size, w, h, expect_bpp, size
+                );
+            }
             if ok {
                 // shm 段是只读挂载的，不能往里写 → 独立缓冲区存非 shm 帧。
                 out.clear();
@@ -505,11 +474,108 @@ if NON_SHM_MARKER not in cap:
                 libc::free(image.data as *mut libc::c_void);
             }
             libc::free(img as *mut libc::c_void);
+            if !err.is_null() {
+                libc::free(err as *mut libc::c_void);
+            }
             ok
         }
-    }"""
-    cap = cap[:start] + new_frame + cap[end + 1:]
+"""
+
+
+cap = open(cap_path, encoding="utf-8").read()
+if "last_shm: Vec<u8>," not in cap:
+    field_anchor = "    saved_raw_data: Vec<u8>, // for faster compare and copy\n"
+    if field_anchor not in cap:
+        sys.exit("ERROR: %s 里找不到 saved_raw_data 锚点" % cap_path)
+    fields = field_anchor + """
+    // NPA: non-shm fallback —— 记录上一次 shm 读回的内容，用来区分
+    // 「屏幕真的没变」和「shm 陈旧（无显示输出）」两种情况。
+    last_shm: Vec<u8>,
+    stale_hits: u32,   // 连续多少次「shm 没变但非 shm 变了」
+    non_shm: bool,     // 判定该机器 shm 陈旧 → 之后一直走非 shm 读回
+    last_probe: Option<std::time::Instant>,
+    non_shm_buf: Vec<u8>, // 非 shm 读回的帧（shm 段只读挂载，不能往里写）
+"""
+    cap = cap.replace(field_anchor, fields, 1)
+
+if "last_shm: Vec::new()," not in cap:
+    init_anchor = "            saved_raw_data: Vec::new(),\n"
+    if init_anchor not in cap:
+        sys.exit("ERROR: %s 里找不到 saved_raw_data 初始化锚点" % cap_path)
+    cap = cap.replace(
+        init_anchor,
+        init_anchor
+        + "            last_shm: Vec::new(),\n"
+        + "            stale_hits: 0,\n"
+        + "            non_shm: false,\n"
+        + "            last_probe: None,\n"
+        + "            non_shm_buf: Vec::new(),\n",
+        1,
+    )
+    open(cap_path, "w", encoding="utf-8").write(cap)
+    print("patched %s（非 shm 字段初始化）" % cap_path)
+
+if "const FORMAT_Z_PIXMAP: u8 = 0;" not in cap:
+    const_anchor = "impl Capturer {\n"
+    if const_anchor not in cap:
+        sys.exit("ERROR: %s 里找不到 impl Capturer 锚点" % cap_path)
+    consts = const_anchor + """    // NPA: non-shm fallback — xcb_get_image 的标准 ZPixmap 格式值
+    // （xcb/xproto.h: XCB_IMAGE_FORMAT_Z_PIXMAP = 0）。
+    const FORMAT_Z_PIXMAP: u8 = 0;
+    // NPA: 非 shm 探测的最小间隔（ms）——静态桌面时不必每帧都做一次昂贵的
+    // 协议读回；1000ms 一次 ≈ 每秒 40ms 额外开销。
+    const NON_SHM_PROBE_INTERVAL_MS: u64 = 1000;
+
+"""
+    cap = cap.replace(const_anchor, consts, 1)
+    open(cap_path, "w", encoding="utf-8").write(cap)
+    print("patched %s（非 shm 常量）" % cap_path)
+
+if FRAME_MARKER not in cap:
+    # 替换整个 frame()（按大括号配平定位函数末尾）
+    frame_header = "    pub fn frame<'b>(&'b mut self) -> std::io::Result<&'b [u8]> {"
+    if frame_header not in cap:
+        sys.exit("ERROR: %s 里找不到 frame() 锚点" % cap_path)
+    start = cap.index(frame_header)
+    depth = 0
+    end = None
+    for j in range(start, len(cap)):
+        if cap[j] == "{":
+            depth += 1
+        elif cap[j] == "}":
+            depth -= 1
+            if depth == 0:
+                end = j
+                break
+    if end is None:
+        sys.exit("ERROR: %s 里 frame() 的大括号没配平" % cap_path)
+    cap = cap[:start] + NON_SHM_FRAME + NON_SHM_HELPERS + cap[end + 1:]
     open(cap_path, "w", encoding="utf-8").write(cap)
     print("patched %s（非 shm 读回兜底）" % cap_path)
 else:
     print("capturer.rs 已有非 shm 兜底，跳过")
+
+# 兜底：frame 已打过补丁但辅助函数缺失时，单独补上辅助函数。
+if "fn same_bytes" not in cap:
+    # frame 已打过补丁但辅助函数缺失 → 插到 frame() 之后。
+    frame_header = "    pub fn frame<'b>(&'b mut self) -> std::io::Result<&'b [u8]> {"
+    if frame_header not in cap:
+        sys.exit("ERROR: %s 里找不到 frame() 锚点（无法插入辅助函数）" % cap_path)
+    fstart = cap.index(frame_header)
+    fdepth = 0
+    fend = None
+    for j in range(fstart, len(cap)):
+        if cap[j] == "{":
+            fdepth += 1
+        elif cap[j] == "}":
+            fdepth -= 1
+            if fdepth == 0:
+                fend = j
+                break
+    if fend is None:
+        sys.exit("ERROR: %s 里 frame() 的大括号没配平（无法插入辅助函数）" % cap_path)
+    cap = cap[:fend + 1] + "\n" + NON_SHM_HELPERS + cap[fend + 1:]
+    open(cap_path, "w", encoding="utf-8").write(cap)
+    print("patched %s（非 shm 辅助函数）" % cap_path)
+else:
+    print("capturer.rs 已有非 shm 辅助函数，跳过")

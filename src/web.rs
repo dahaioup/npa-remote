@@ -335,7 +335,9 @@ async fn handle_control(v: &Value, cfg: &StreamCfg) -> String {
             }
             "pos" => {
                 let (x, y) = crate::input::mouse_pos().unwrap_or((0, 0));
-                let (w, h) = crate::capture::screen_size().unwrap_or((0, 0));
+                // 屏幕尺寸：走 display 枚举（xcap → scrap 根窗口兜底），
+                // 不走 grab_full —— 后者在无 ImageMagick 的机器上必然失败，尺寸会变成 0。
+                let (w, h) = crate::capture::capture_screen_size();
                 let screens: Vec<serde_json::Value> = crate::capture::screen_list()
                     .iter()
                     .map(|(id, sw, sh)| serde_json::json!({"id": id, "w": sw, "h": sh}))

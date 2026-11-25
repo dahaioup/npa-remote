@@ -479,7 +479,8 @@ NON_SHM_HELPERS = """    fn same_bytes(a: &[u8], b: &[u8]) -> bool {
             }
             ok
         }
-"""
+
+    }"""
 
 
 cap = open(cap_path, encoding="utf-8").read()

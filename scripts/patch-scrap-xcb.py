@@ -412,6 +412,12 @@ NON_SHM_FRAME = """    pub fn frame<'b>(&'b mut self) -> std::io::Result<&'b [u8
                 &mut self.non_shm_buf,
             ) {
                 let fresh_changed = !Self::same_bytes(&self.non_shm_buf, &self.saved_raw_data);
+                eprintln!(
+                    "NPA: 非 shm 读回完成 len={} fresh_changed={} 首8字节={:?}",
+                    self.non_shm_buf.len(),
+                    fresh_changed,
+                    &self.non_shm_buf[..8.min(self.non_shm_buf.len())]
+                );
                 if fresh_changed {
                     // 屏幕变了，但 shm 一直没变 → 这台机器的 shm 读回是陈旧帧。
                     if had_prev && !shm_changed {
@@ -519,6 +525,10 @@ NON_SHM_HELPERS = """    fn same_bytes(a: &[u8], b: &[u8]) -> bool {
                 libc::free(img as *mut libc::c_void);
                 return false;
             }
+            eprintln!(
+                "NPA: 非 shm 数据 OK len={} depth={} bpp={} size={}",
+                len, depth, bpp, size
+            );
             let take = size.min(len);
             out.clear();
             out.reserve(take);

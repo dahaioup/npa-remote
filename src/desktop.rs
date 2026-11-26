@@ -37,7 +37,14 @@ pub fn capabilities() -> Vec<String> {
     caps
 }
 
+/// 插件 MCP 端点的默认端口（与 `serve --port` 的默认值一致）。
+pub const DEFAULT_MCP_PORT: u16 = 56750;
+
 /// plugin.initialize 的返回体。
+///
+/// `mcp` 段是「通用 MCP 能力注册」：插件自报自己在 HTTP 上提供 MCP，
+/// NPA 据此把本插件登记成对外的 MCP 服务并代理到
+/// /plugins/npa-remote/mcp（工具名带 npa-remote. 前缀）。
 pub fn initialize_result() -> Value {
     json!({
         "id": PLUGIN_ID,
@@ -45,6 +52,10 @@ pub fn initialize_result() -> Value {
         "version": env!("CARGO_PKG_VERSION"),
         "protocol": "1",
         "capabilities": capabilities(),
+        "mcp": {
+            "endpoint": format!("https://127.0.0.1:{}/mcp", DEFAULT_MCP_PORT),
+            "tls": true,
+        },
     })
 }
 

@@ -23,6 +23,10 @@ clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS OCR 走 Vision（src/platform/macos_ocr.mm），Rust 侧释放 C 字符串要用 libc
+libc = "0.2"
+
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 # RustDesk 采集/编码（AGPL）。Windows=DXGI/macOS=Quartz 采集 + VP8 编码。
 # 依赖发现：scrap build.rs 走 VCPKG_ROOT 或 homebrew Cellar（本机补丁已支持 Intel /usr/local）。

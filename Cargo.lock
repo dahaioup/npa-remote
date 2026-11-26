@@ -3983,6 +3983,7 @@ dependencies = [
  "ndk-context",
  "nokhwa",
  "num_cpus",
+ "objc",
  "pkg-config",
  "serde 1.0.229",
  "serde_json 1.0.154",

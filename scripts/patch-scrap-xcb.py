@@ -639,3 +639,29 @@ if "fn same_bytes" not in cap:
     print("patched %s（非 shm 辅助函数）" % cap_path)
 else:
     print("capturer.rs 已有非 shm 辅助函数，跳过")
+# --- 5. build.rs: macOS Intel 机也走 homebrew 兜底 ---
+# 上游只认 aarch64 的 /opt/homebrew/Cellar；Intel mac 的 homebrew 装在
+# /usr/local/Cellar，没有它就完全编不过（scrap 的 libvpx/libyuv/aom 依赖）。
+build_path = os.path.join(root, "build.rs")
+if not os.path.exists(build_path):
+    print("跳过：%s 不存在" % build_path)
+elif "NPA: homebrew intel fallback" in open(build_path, encoding="utf-8").read():
+    print("build.rs 已有 homebrew intel 兜底，跳过")
+else:
+    b = open(build_path, encoding="utf-8").read()
+    old_guard = 'if target_os != "macos" || target_arch != "aarch64" {'
+    new_guard = 'if target_os != "macos" || (target_arch != "aarch64" && target_arch != "x86_64") {'
+    old_home = 'let mut path = PathBuf::from("/opt/homebrew/Cellar");'
+    new_home = (
+        '// NPA: homebrew intel fallback（Intel mac 用 /usr/local/Cellar）\n'
+        '    let mut path = PathBuf::from(if target_arch == "aarch64" {\n'
+        '        "/opt/homebrew/Cellar"\n'
+        '    } else {\n'
+        '        "/usr/local/Cellar"\n'
+        '    });'
+    )
+    if old_guard not in b or old_home not in b:
+        sys.exit("ERROR: %s 里找不到 homebrew 兜底锚点" % build_path)
+    b = b.replace(old_guard, new_guard, 1).replace(old_home, new_home, 1)
+    open(build_path, "w", encoding="utf-8").write(b)
+    print("patched %s（homebrew intel 兜底）" % build_path)

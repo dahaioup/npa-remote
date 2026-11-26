@@ -68,18 +68,32 @@ fn write_frame<W: Write>(out: &mut W, value: &Value) -> Result<()> {
 
 fn dispatch(method: &str, params: &Value) -> Result<Value> {
     match method {
-        "plugin.initialize" => Ok(json!({
-            "id": "npa-remote",
-            "name": "NPA Remote 插件",
-            "version": env!("CARGO_PKG_VERSION"),
-            "protocol": "1",
-            "capabilities": [
-                "desktop.screenshot", "desktop.screens",
-                "desktop.mouse_move", "desktop.mouse_click", "desktop.mouse_scroll",
-                "desktop.type", "desktop.hotkey",
-                "desktop.info", "desktop.clipboard_get", "desktop.clipboard_set"
-            ],
-        })),
+        "plugin.initialize" => {
+            let mut capabilities = vec![
+                "desktop.screenshot",
+                "desktop.screens",
+                "desktop.mouse_move",
+                "desktop.mouse_click",
+                "desktop.mouse_scroll",
+                "desktop.type",
+                "desktop.hotkey",
+                "desktop.info",
+                "desktop.clipboard_get",
+                "desktop.clipboard_set",
+            ];
+            // OCR 只有 Windows / macOS 有系统引擎，Linux 不声明（调用方会明确收到
+            // 「插件不支持 desktop.read」而不是一个空结果）。
+            if crate::ocr::supported() {
+                capabilities.push("desktop.read");
+            }
+            Ok(json!({
+                "id": "npa-remote",
+                "name": "NPA Remote 插件",
+                "version": env!("CARGO_PKG_VERSION"),
+                "protocol": "1",
+                "capabilities": capabilities,
+            }))
+        }
         "desktop.screens" => {
             let (w, h) = crate::capture::screen_size()?;
             Ok(json!([{"id": "0", "name": "primary", "width": w, "height": h}]))
@@ -148,6 +162,38 @@ fn dispatch(method: &str, params: &Value) -> Result<Value> {
             let (w, h) = crate::capture::screen_size()?;
             let (mx, my) = crate::input::mouse_pos().unwrap_or((0, 0));
             Ok(json!({"mouse": {"x": mx, "y": my}, "screens": [{"id":"0","width":w,"height":h}]}))
+        }
+        "desktop.read" => {
+            // 屏幕文字识别：先截图（无论 OCR 成败都带上截图路径），再识别。
+            let region = params.get("region").cloned().unwrap_or(json!({}));
+            let region: crate::capture::Region = serde_json::from_value(region)?;
+            let lang = params.get("lang").and_then(|v| v.as_str()).unwrap_or("");
+            let frame = crate::capture::grab(&region)?;
+            let jpeg = crate::capture::encode_jpeg(&frame, 70)?;
+            let path = write_temp(&jpeg)?;
+            let mut out = json!({
+                "status": "ok",
+                "resource": {
+                    "path": path,
+                    "mime_type": "image/jpeg",
+                    "mime": "image/jpeg",
+                    "size": jpeg.len(),
+                },
+                "text": "",
+                "lines": [],
+            });
+            match crate::ocr::recognize(&path, lang) {
+                Ok(o) => {
+                    out["engine"] = json!(o.engine);
+                    out["text"] = json!(o.text);
+                    out["lines"] = json!(o.lines);
+                }
+                Err(e) => {
+                    out["status"] = json!("ocr_failed");
+                    out["error"] = json!(e.to_string());
+                }
+            }
+            Ok(out)
         }
         "desktop.clipboard_get" => Ok(json!({"text": crate::input::clipboard_get()?})),
         "desktop.clipboard_set" => {

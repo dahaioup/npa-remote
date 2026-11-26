@@ -10,6 +10,11 @@
 // 许可证：AGPL-3.0（见 LICENSE）。
 mod capture;
 mod display_env;
+mod ocr;
+#[cfg(target_os = "windows")]
+mod ocr_windows;
+#[cfg(target_os = "macos")]
+mod ocr_macos;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 mod vpx;
 mod input;

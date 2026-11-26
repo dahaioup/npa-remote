@@ -77,8 +77,7 @@ fn dispatch(method: &str, params: &Value) -> Result<Value> {
                 "desktop.screenshot", "desktop.screens",
                 "desktop.mouse_move", "desktop.mouse_click", "desktop.mouse_scroll",
                 "desktop.type", "desktop.hotkey",
-                "desktop.info", "desktop.clipboard_get", "desktop.clipboard_set",
-                "desktop.stream"
+                "desktop.info", "desktop.clipboard_get", "desktop.clipboard_set"
             ],
         })),
         "desktop.screens" => {
@@ -91,21 +90,37 @@ fn dispatch(method: &str, params: &Value) -> Result<Value> {
             let frame = crate::capture::grab(&region)?;
             let jpeg = crate::capture::encode_jpeg(&frame, 70)?;
             let path = write_temp(&jpeg)?;
-            Ok(json!({"resource": {"path": path, "mime": "image/jpeg", "size": jpeg.len()}}))
+            Ok(json!({"resource": {
+                "path": path,
+                "mime_type": "image/jpeg",
+                "mime": "image/jpeg",
+                "size": jpeg.len(),
+            }}))
         }
         "desktop.mouse_move" => {
             let x = params.get("x").and_then(|v| v.as_i64()).unwrap_or(0);
             let y = params.get("y").and_then(|v| v.as_i64()).unwrap_or(0);
-            crate::input::mouse_move(x, y)?;
+            let relative = params
+                .get("relative")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if relative {
+                let (cx, cy) = crate::input::mouse_pos().unwrap_or((0, 0));
+                crate::input::mouse_move(cx + x, cy + y)?;
+            } else {
+                crate::input::mouse_move(x, y)?;
+            }
             Ok(json!({}))
         }
         "desktop.mouse_click" => {
             let button = params.get("button").and_then(|v| v.as_str()).unwrap_or("left");
             let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("click");
-            if action != "click" {
-                anyhow::bail!("action {action} not supported (click only)");
+            match action {
+                "click" => crate::input::mouse_click(button, 1)?,
+                "down" => crate::input::mouse_down(button)?,
+                "up" => crate::input::mouse_up(button)?,
+                other => anyhow::bail!("action {other} not supported (click/down/up)"),
             }
-            crate::input::mouse_click(button, 1)?;
             Ok(json!({}))
         }
         "desktop.mouse_scroll" => {

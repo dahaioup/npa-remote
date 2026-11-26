@@ -31,7 +31,7 @@ const BASE_CAPABILITIES: &[&str] = &[
 /// （调用方会明确收到「插件不支持 desktop.read」而不是一个空结果）。
 pub fn capabilities() -> Vec<String> {
     let mut caps: Vec<String> = BASE_CAPABILITIES.iter().map(|c| c.to_string()).collect();
-    if crate::ocr::supported() {
+    if crate::ocr::supported() && crate::settings::ocr_enabled() {
         caps.push("desktop.read".to_string());
     }
     caps
@@ -56,6 +56,8 @@ pub fn initialize_result() -> Value {
             "endpoint": format!("https://127.0.0.1:{}/mcp", DEFAULT_MCP_PORT),
             "tls": true,
         },
+        // 插件自带的参数页（core 的「插件 → 设置」页会链到这里）。
+        "settings_ui_url": format!("https://127.0.0.1:{}/settings", DEFAULT_MCP_PORT),
     })
 }
 
@@ -63,6 +65,10 @@ pub fn initialize_result() -> Value {
 pub fn dispatch(method: &str, params: &Value) -> Result<Value> {
     match method {
         "plugin.initialize" => Ok(initialize_result()),
+        // 参数协议：core 渲染「插件 → 设置」页靠 describe，推变更靠 apply。
+        "plugin.settings.describe" => Ok(crate::settings::describe()),
+        "plugin.settings.get" => Ok(crate::settings::get()),
+        "plugin.settings.apply" => Ok(crate::settings::apply(params)),
         "desktop.screens" => {
             let (w, h) = crate::capture::screen_size()?;
             Ok(json!([{"id": "0", "name": "primary", "width": w, "height": h}]))
@@ -71,7 +77,8 @@ pub fn dispatch(method: &str, params: &Value) -> Result<Value> {
             let region = params.get("region").cloned().unwrap_or(json!({}));
             let region: crate::capture::Region = serde_json::from_value(region)?;
             let frame = crate::capture::grab(&region)?;
-            let jpeg = crate::capture::encode_jpeg(&frame, 70)?;
+            let quality = crate::settings::jpeg_quality().unwrap_or(70);
+            let jpeg = crate::capture::encode_jpeg(&frame, quality)?;
             let path = write_temp(&jpeg)?;
             Ok(json!({"resource": {
                 "path": path,
@@ -133,6 +140,9 @@ pub fn dispatch(method: &str, params: &Value) -> Result<Value> {
             Ok(json!({"mouse": {"x": mx, "y": my}, "screens": [{"id":"0","width":w,"height":h}]}))
         }
         "desktop.read" => {
+            if !crate::settings::ocr_enabled() {
+                anyhow::bail!("ocr disabled by plugin settings");
+            }
             // 屏幕文字识别：先截图（无论 OCR 成败都带上截图路径），再识别。
             let region = params.get("region").cloned().unwrap_or(json!({}));
             let region: crate::capture::Region = serde_json::from_value(region)?;

@@ -13,6 +13,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 const INDEX: &str = include_str!("index.html");
+const SETTINGS_PAGE: &str = include_str!("settings.html");
 const DEFAULT_FPS: u64 = 4;
 const MAX_FPS: u64 = 30;
 
@@ -39,8 +40,8 @@ impl StreamCfg {
         Self {
             tier: std::sync::atomic::AtomicU8::new(3), // 默认流畅 1M
             scale: std::sync::atomic::AtomicU8::new(100),
-            fps: std::sync::atomic::AtomicU64::new(DEFAULT_FPS),
-            codec: std::sync::atomic::AtomicU8::new(CODEC_AUTO),
+            fps: std::sync::atomic::AtomicU64::new(crate::settings::default_fps()),
+            codec: std::sync::atomic::AtomicU8::new(default_codec()),
         }
     }
     fn tier(&self) -> u8 {
@@ -75,7 +76,9 @@ pub async fn serve(bind: &str, port: u16) -> Result<()> {
     let app = crate::mcp::mount(
         Router::new()
             .route("/", get(index))
+            .route("/settings", get(settings_page))
             .route("/api/info", get(api_info))
+            .route("/api/settings", get(api_settings).post(api_settings_save))
             .route("/ws", get(ws_upgrade)),
     );
     // HTTPS（自签证书）：WebCodecs 需要 secure context，局域网裸 HTTP 会拿不到解码器。
@@ -105,6 +108,29 @@ pub async fn serve(bind: &str, port: u16) -> Result<()> {
 
 async fn index() -> Html<&'static str> {
     Html(INDEX)
+}
+
+/// GET /settings — 插件自带的参数页（core 的「插件 → 设置」页会链到这里）。
+async fn settings_page() -> Html<&'static str> {
+    Html(SETTINGS_PAGE)
+}
+
+/// GET /api/settings — 参数声明 + 当前值。
+async fn api_settings() -> axum::response::Json<serde_json::Value> {
+    let specs = crate::settings::describe();
+    let values = crate::settings::get();
+    axum::response::Json(serde_json::json!({
+        "settings": specs.get("settings").cloned().unwrap_or(serde_json::json!([])),
+        "values": values.get("values").cloned().unwrap_or(serde_json::json!({})),
+    }))
+}
+
+/// POST /api/settings — 保存参数（与 core 下发的 plugin.settings.apply 同一份存储）。
+async fn api_settings_save(body: String) -> axum::response::Json<serde_json::Value> {
+    let incoming: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    let applied = crate::settings::apply(&incoming);
+    axum::response::Json(applied)
 }
 
 /// GET /api/info — 返回本机 IP 列表 + 版本号（前端标题栏显示用）
@@ -388,7 +414,11 @@ async fn handle_control(v: &Value, cfg: &StreamCfg) -> String {
                 Ok(serde_json::json!({"ok":true,"scale":scale}))
             }
             "fps" => {
-                let fps = v.get("v").and_then(|x| x.as_u64()).unwrap_or(DEFAULT_FPS).clamp(1, MAX_FPS);
+                let fps = v
+                    .get("v")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or_else(crate::settings::default_fps)
+                    .clamp(1, MAX_FPS);
                 cfg.fps.store(fps, std::sync::atomic::Ordering::Relaxed);
                 Ok(serde_json::json!({"ok":true,"fps":fps}))
             }
@@ -449,6 +479,15 @@ const CODEC_AUTO: u8 = 0;
 const CODEC_VP8: u8 = 1;
 const CODEC_JPEG: u8 = 2;
 const CODEC_LABELS: [&str; 3] = ["自动", "VP8", "JPEG"];
+
+/// 插件参数 capture_mode 决定初始编码方式：auto / vp8 / jpeg。
+fn default_codec() -> u8 {
+    match crate::settings::capture_mode().as_str() {
+        "vp8" => CODEC_VP8,
+        "jpeg" => CODEC_JPEG,
+        _ => CODEC_AUTO,
+    }
+}
 
 /// Windows/macOS/Linux：DXGI/Quartz/X11 采集 + VP8（RustDesk scrap），帧 framing [type=2][key][len LE][data]。
 /// VP8 初始化或连续编码失败时回退 JPEG，保证浏览器始终有画面。

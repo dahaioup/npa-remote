@@ -21,6 +21,7 @@ mod ocr_macos;
 mod vpx;
 mod input;
 mod pluginrpc;
+mod settings;
 mod web;
 #[cfg(target_os = "linux")]
 mod uinput;

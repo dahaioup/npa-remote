@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>npa-remote 设置</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 24px; background: #14161a; color: #e6e8eb;
+         font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: #8b93a1; margin-bottom: 20px; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 12px 0;
+         border-bottom: 1px solid #262b33; }
+  .row .label { flex: 0 0 220px; font-weight: 600; }
+  .row .desc { flex: 1 1 auto; color: #8b93a1; font-size: 12px; }
+  input[type=text], input[type=number], select {
+    background: #1c1f26; color: #e6e8eb; border: 1px solid #333944;
+    border-radius: 6px; padding: 6px 8px; min-width: 160px; }
+  input[type=checkbox] { width: 18px; height: 18px; }
+  .bar { margin-top: 22px; display: flex; gap: 10px; align-items: center; }
+  button { background: #2b6cf0; color: #fff; border: 0; border-radius: 6px;
+           padding: 8px 16px; cursor: pointer; font-size: 14px; }
+  button.ghost { background: #2a2f38; }
+  #msg { color: #8b93a1; }
+  #msg.err { color: #ff6b6b; }
+  #msg.ok { color: #4ade80; }
+</style>
+</head>
+<body>
+<h1>npa-remote 设置</h1>
+<div class="sub">这些参数由插件自己声明；NPA 的「插件 → 设置」页也会渲染同一份参数表。</div>
+<div id="rows"></div>
+<div class="bar">
+  <button onclick="save()">保存</button>
+  <button class="ghost" onclick="load()">重新读取</button>
+  <span id="msg"></span>
+</div>
+<script>
+let specs = [];
+function el(tag, attrs) { const e = document.createElement(tag);
+  for (const k in (attrs||{})) e.setAttribute(k, attrs[k]); return e; }
+
+async function load() {
+  const r = await fetch('/api/settings');
+  const data = await r.json();
+  specs = data.settings || [];
+  const values = data.values || {};
+  const box = document.getElementById('rows');
+  box.innerHTML = '';
+  for (const s of specs) {
+    const row = el('div', {class: 'row'});
+    const lab = el('div', {class: 'label'}); lab.textContent = s.label || s.key; row.appendChild(lab);
+    const cur = values[s.key] !== undefined ? values[s.key] : (s.default || '');
+    let input;
+    if (s.type === 'bool') {
+      input = el('input', {type: 'checkbox'});
+      input.checked = (cur === 'true' || cur === '1');
+    } else if (s.type === 'enum') {
+      input = el('select');
+      for (const o of (s.options || [])) {
+        const opt = el('option', {value: o}); opt.textContent = o;
+        if (o === cur) opt.selected = true;
+        input.appendChild(opt);
+      }
+    } else if (s.type === 'number') {
+      input = el('input', {type: 'number'});
+      input.value = cur;
+    } else {
+      input = el('input', {type: 'text'});
+      input.value = cur;
+    }
+    input.dataset.key = s.key; input.dataset.type = s.type || 'string';
+    row.appendChild(input);
+    const desc = el('div', {class: 'desc'}); desc.textContent = s.description || '';
+    row.appendChild(desc);
+    box.appendChild(row);
+  }
+}
+
+async function save() {
+  const values = {};
+  for (const input of document.querySelectorAll('#rows input, #rows select')) {
+    if (input.dataset.type === 'bool') values[input.dataset.key] = input.checked ? 'true' : 'false';
+    else values[input.dataset.key] = input.value;
+  }
+  const r = await fetch('/api/settings', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({values})});
+  const msg = document.getElementById('msg');
+  if (r.ok) { msg.textContent = '已保存'; msg.className = 'ok'; }
+  else { msg.textContent = '保存失败'; msg.className = 'err'; }
+  setTimeout(() => { msg.textContent = ''; }, 2500);
+}
+
+load();
+</script>
+</body>
+</html>

@@ -70,10 +70,14 @@ fn map_frame_to_enigo(fx: i64, fy: i64, scale_pct: u8) -> (i64, i64) {
 
 pub async fn serve(bind: &str, port: u16) -> Result<()> {
     let addr = format!("{bind}:{port}");
-    let app = Router::new()
-        .route("/", get(index))
-        .route("/api/info", get(api_info))
-        .route("/ws", get(ws_upgrade));
+    // /mcp：独立运行时插件自己就是 MCP 服务端（Streamable HTTP），
+    // 任何 MCP 客户端都能直接连 https://<host>:<port>/mcp 用桌面能力。
+    let app = crate::mcp::mount(
+        Router::new()
+            .route("/", get(index))
+            .route("/api/info", get(api_info))
+            .route("/ws", get(ws_upgrade)),
+    );
     // HTTPS（自签证书）：WebCodecs 需要 secure context，局域网裸 HTTP 会拿不到解码器。
     // 证书持久化在 exe 同目录，已有则复用（指纹稳定，浏览器信任一次即可）。
     let exe_dir = std::env::current_exe()

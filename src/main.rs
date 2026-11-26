@@ -9,7 +9,9 @@
 //
 // 许可证：AGPL-3.0（见 LICENSE）。
 mod capture;
+mod desktop;
 mod display_env;
+mod mcp;
 mod ocr;
 #[cfg(target_os = "windows")]
 mod ocr_windows;

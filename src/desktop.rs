@@ -67,6 +67,11 @@ pub fn dispatch(method: &str, params: &Value) -> Result<Value> {
         "plugin.initialize" => Ok(initialize_result()),
         // 参数协议：core 渲染「插件 → 设置」页靠 describe，推变更靠 apply。
         "plugin.settings.describe" => Ok(crate::settings::describe()),
+        // core 用 plugin.health 探活（internal/plugin/manager.go Health）。
+        // 缺这个方法，槽位会被判成 stopped，插件看起来像没起来。
+        "plugin.health" => Ok(json!({"ok": true, "engine": "npa-remote"})),
+        // core 关闭插件时先问一声；回完就退出进程（stdin 会随之 EOF）。
+        "plugin.shutdown" => Ok(json!({"stopped": true})),
         "plugin.settings.get" => Ok(crate::settings::get()),
         "plugin.settings.apply" => Ok(crate::settings::apply(params)),
         "desktop.screens" => {

@@ -1,6 +1,6 @@
 [package]
 name = "npa-remote"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "AGPL-3.0"
 description = "NPA remote 插件：Web 远程控制 + 进阶截图/输入/剪贴板（可独立运行，也可作为 NPA 插件）"
